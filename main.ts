@@ -57,9 +57,6 @@ export default class MyPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on('editor-menu', this.handleEditorMenu, this)
         )
-        this.registerEvent(
-			this.app.workspace.on("file-menu", this.handleFileMenu, this)
-		);
 
         this.registerView(
             'graph-view', // 这是视图的唯一标识符，我们通常定义为一个常量
@@ -147,20 +144,6 @@ export default class MyPlugin extends Plugin {
         });
     }
 
-    handleFileMenu(menu: Menu, file: TAbstractFile) {
-        if (file instanceof TFile && file.extension === 'svg') {
-            if (file.path.startsWith('__data__/zyb/graphs/')) {
-                menu.addItem((item) => {
-                    item.setTitle('Edit Graph')
-                        .setIcon('graph')
-                        .onClick(async () => {
-                            this.initView(file)
-                        });
-                })
-            }
-        }
-    }
-
     activeLeafPath(workspace: Workspace) {
         return workspace.activeLeaf?.view.getState().file as string;
     }
@@ -174,24 +157,22 @@ export default class MyPlugin extends Plugin {
 
 
     async initView(file: TFile | null = null) {
-        if (file) {
-            for (const view of this.workspace.getLeavesOfType('graph-view')) {
-                if (view.view instanceof GraphView) {
-                    return await this.workspace.revealLeaf(view);
-                }
-            }
-        }
-
         const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
-        const leaf = this.workspace.getLeaf('split', 'vertical');
-
+        
         if (!file) {
             await this.ensureFolderExists('__data__/zyb/graphs');
             file = await this.app.vault.create(`__data__/zyb/graphs/${Date.now()}.graph`, `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<svg xmlns="http://www.w3.org/2000/svg" version="1.1">\n</svg>`);
             const cursor = hostView.editor.getCursor();
             hostView.editor.replaceRange(`\`\`\`zyb-graph\n${file.path}\n\`\`\``, cursor);
-            await leaf.openFile(file)
         } else {
+            for (const view of this.workspace.getLeavesOfType('graph-view')) {
+                if (view.view instanceof GraphView) {
+                    view.openFile(file);
+                    return await this.workspace.revealLeaf(view);
+                }
+            }
+
+            const leaf = this.workspace.getLeaf('split', 'vertical');
             await leaf.openFile(file)
         }
     }
@@ -457,49 +438,11 @@ class GraphView extends FileView {
     async onLoadFile(file: TFile): Promise<void> {
         const container = this.containerEl.children[1] as HTMLElement;
         (container.children[0] as any).contentWindow!.postMessage({command: 'file', path:file.path, source: readMetadata(await this.vault.adapter.read(normalizePath(file.path))) || ''}, '*');
+        this.file = file;
     }
 
     getDisplayText(): string {
         return 'Graph View';
-    }
-}
-
-class GraphEmbed extends MarkdownRenderChild {
-    plugin: MyPlugin;
-    filePath: string;
-
-    constructor(plugin: MyPlugin, containerEl: HTMLElement, filePath:string) {
-        super(containerEl);
-
-        this.plugin = plugin;
-        this.filePath = filePath;
-    }
-
-    async onload() {
-        this.containerEl.empty();
-
-        const file = this.plugin.app.vault.getAbstractFileByPath(this.filePath);
-        if (!(file instanceof TFile)) {
-            this.containerEl.setText(`错误: 文件未找到 - ${this.filePath}`);
-            return;
-        }
-
-        const img = this.containerEl.createEl('img')
-        img.src = this.plugin.app.vault.getResourcePath(file);
-        img.dataset.filePath = file.path;
-
-        this.containerEl.addEventListener('click', (event) => {
-            // 2. 阻止事件继续传播，这一点非常重要！
-            //    它会阻止 Obsidian 执行默认的“切换到代码块”行为。
-            event.stopPropagation();
-            event.preventDefault();
-
-            // 3. 调用我们自己的函数来打开编辑器
-            this.plugin.initView(file);
-        });
-        
-        // 为了更好的用户体验，让鼠标悬停时显示为“可点击”的手形光标
-        this.containerEl.style.cursor = 'pointer';
     }
 }
 
