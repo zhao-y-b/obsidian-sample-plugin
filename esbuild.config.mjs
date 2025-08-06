@@ -37,7 +37,7 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "main.js",
+	outfile: "E:\\Obsidian Vault\\.obsidian\\plugins\\zyb-plugin\\main.js",
 	minify: prod,
 });
 
