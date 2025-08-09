@@ -1,5 +1,8 @@
 import { App, addIcon, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, MarkdownEditView, Menu, Vault, Workspace, ItemView, WorkspaceLeaf, TAbstractFile, TFile, normalizePath, TextComponent, FileView, MarkdownRenderChild } from 'obsidian';
-
+import express from 'express'
+import * as http from 'http';       // 引入 node 的 http 模块，用于服务器类型
+import * as path from 'path'
+import { waitForDebugger } from 'inspector';
 // Remember to rename these classes and interfaces!
 
 let viewHTML = '';
@@ -10,11 +13,23 @@ export default class MyPlugin extends Plugin {
     private lastWrapper: HTMLElement | null = null;
     private vault: Vault;
     private workspace: Workspace;
+    private webApp: express.Application;
+    private server: http.Server;
+    private singleView?: GraphView
 
 	async onload() {
 		this.vault = this.app.vault;
         this.workspace = this.app.workspace;
-        
+        this.webApp = express();
+        const vaultPath = (this.vault.adapter as any).getBasePath();
+   
+        this.webApp.use(express.static(path.join(vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id, 'assets')));
+        this.server = this.webApp.listen(9527, () => {
+            console.log('server started.')
+        }).on('error', err => {
+            console.log(err)
+        })
+
         addIcon("graph", `<svg
             version="1.1"
             viewBox="0 0 100 100"
@@ -60,8 +75,7 @@ export default class MyPlugin extends Plugin {
 
         this.registerView(
             'graph-view', // 这是视图的唯一标识符，我们通常定义为一个常量
-            (leaf: WorkspaceLeaf) => new GraphView(this, leaf) // 这是一个工厂函数，返回一个我们自定义视图的新实例
-        );
+            (leaf: WorkspaceLeaf) => new GraphView(this, leaf));
         this.registerExtensions(['graph'], 'graph-view')
 
         // const s1 = await this.tryCacheRemoteScript("https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.17/d3.min.js","d3.js");
@@ -112,20 +126,6 @@ export default class MyPlugin extends Plugin {
         // const jsBlob3 = new Blob([s1], { type: 'text/javascript' });
         // const jsUrl3 = URL.createObjectURL(jsBlob3);
         // viewHTML = viewHTML.replace("<!--SCRIPT_PLACEHOLDER-->", `<script src="${jsUrl1}"></script><script src="${jsUrl2}"></script><script src="${jsUrl3}"></script>`);
-	}
-
-    async insertGraphViewScript() {
-        (window as any).graphViewScripts = (window as any).graphViewScripts || {
-            onEditorKeyDown: (e: Event) => {
-                if ((e as any).key === "Enter") {
-                    console.log("ready to use ", (window as any).Desmos);
-                }
-            }
-        }
-    }
-
-    async onMessage(event: any) {
-        console.log(event);
     }
 
     handleEditorMenu(menu: Menu, editor: Editor, view: MarkdownView, ctx?: any) {
@@ -252,6 +252,10 @@ export default class MyPlugin extends Plugin {
             this.lastWrapper.removeEventListener('mouseup', this.onEditorMouseUp);
             this.lastWrapper = null;
         }
+
+        if (this.server) {
+            this.server.close();
+        }
     }
 
     async tryCacheRemoteScript(url: string, filename: string): Promise<string> {
@@ -363,27 +367,6 @@ class GraphView extends FileView {
         return 'graph-view';
     }
 
-
-  private replaceVisibleImageLink(editor: Editor, targetImage: string, newImage: string) {
-    const start = 0;
-    const end = editor.lineCount() - 1;
-
-    for (let i = start; i <= end; i++) {
-      const line = editor.getLine(i);
-      const startIdx = line.indexOf(`![[${targetImage}]]`); // 简化为无 alt 文本匹配
-
-      if (startIdx !== -1) {
-        editor.replaceRange(
-          `![[${newImage}]]`,
-          { line: i, ch: startIdx },
-          { line: i, ch: startIdx + `![[${newImage}]]`.length }
-        );
-        return; // 找到第一个匹配项后立即退出
-      }
-    }
-    console.log("图片未在视口内:", targetImage);
-  }
-
     constructor(plugin: MyPlugin, leaf: WorkspaceLeaf) {
         super(leaf);
 
@@ -413,16 +396,16 @@ class GraphView extends FileView {
         iframe.style.height = '100%';
         iframe.style.border = 'none';
         iframe.sandbox.add("allow-scripts")
+        iframe.sandbox.add("allow-same-origin")
+        iframe.sandbox.add("allow-forms")
         iframe.style.border = 'none';
         iframe.style.outline = 'none';
         iframe.style.overflow = 'hidden';
         iframe.setAttribute('scrolling', 'no')
-
-
+        iframe.src = `http://localhost:9527/index.html`
         // 插入 iframe 并写入内容
         container.innerHTML = '';
         container.appendChild(iframe);
-        iframe.srcdoc = viewHTML;
 
         let r: any;
         const p = new Promise<void>((resolve, reject) => {
@@ -432,7 +415,10 @@ class GraphView extends FileView {
             r();
         }
 
-        return p;
+        await p;
+    }
+
+    protected async onClose() {
     }
 
     async onLoadFile(file: TFile): Promise<void> {

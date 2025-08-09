@@ -39,6 +39,7 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "E:\\Obsidian Vault\\.obsidian\\plugins\\zyb-plugin\\main.js",
 	minify: prod,
+	platform: 'node'
 });
 
 if (prod) {
