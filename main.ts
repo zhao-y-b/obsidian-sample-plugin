@@ -2,14 +2,13 @@ import { App, addIcon, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettin
 import express from 'express'
 import * as http from 'http';       // 引入 node 的 http 模块，用于服务器类型
 import * as path from 'path'
-import { waitForDebugger } from 'inspector';
+import { MarkdownRenderer } from 'obsidian';
 // Remember to rename these classes and interfaces!
 
-let viewHTML = '';
 let listenerReged = false;
 
 export default class MyPlugin extends Plugin {
-	private formatting: boolean = false;
+    private formatting: boolean = false;
     private lastWrapper: HTMLElement | null = null;
     private vault: Vault;
     private workspace: Workspace;
@@ -17,12 +16,12 @@ export default class MyPlugin extends Plugin {
     private server: http.Server;
     private singleView?: GraphView
 
-	async onload() {
-		this.vault = this.app.vault;
+    async onload() {
+        this.vault = this.app.vault;
         this.workspace = this.app.workspace;
         this.webApp = express();
         const vaultPath = (this.vault.adapter as any).getBasePath();
-   
+
         this.webApp.use(express.static(path.join(vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id, 'assets')));
         this.server = this.webApp.listen(9527, () => {
             console.log('server started.')
@@ -50,15 +49,15 @@ export default class MyPlugin extends Plugin {
             style="display:inline" />
             </svg>`);
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'format-math-block',
-			name: 'Format Math Block',
-			callback: () => {
-				this.formatting = !this.formatting;
-				new Notice('Formatting toggled: ' + this.formatting);
-			}
-		});
+        // This adds a simple command that can be triggered anywhere
+        this.addCommand({
+            id: 'format-math-block',
+            name: 'Format Math Block',
+            callback: () => {
+                this.formatting = !this.formatting;
+                new Notice('Formatting toggled: ' + this.formatting);
+            }
+        });
 
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
@@ -78,13 +77,6 @@ export default class MyPlugin extends Plugin {
             (leaf: WorkspaceLeaf) => new GraphView(this, leaf));
         this.registerExtensions(['graph'], 'graph-view')
 
-        // const s1 = await this.tryCacheRemoteScript("https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.17/d3.min.js","d3.js");
-        // const s2 = await this.tryCacheRemoteScript("https://cdn.jsdelivr.net/npm/function-plot@1.18.0/dist/function-plot.min.js", "functionPlot.js")
-        // const s3 = await this.tryCacheRemoteScript("https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js", "mermaid.js");
-
-        const basePath = normalizePath(`.obsidian/plugins/${this.manifest.id}/assets/index.html`);
-        viewHTML = await this.vault.adapter.read(basePath);
-
         this.registerMarkdownCodeBlockProcessor(
             'zyb-graph',
             async (source, el, ctx) => {
@@ -92,11 +84,10 @@ export default class MyPlugin extends Plugin {
 
                 // 不再需要正则表达式！
                 // source 就是我们想要的文件路径（可能需要 .trim() 去掉换行符）
-                const filePath = source.trim(); 
-                
+                const filePath = source.trim();
+
                 const file = this.vault.getAbstractFileByPath(filePath) as TFile
-                if (file)
-                {
+                if (file) {
                     const child = document.createElement('div');
                     child.innerHTML = await this.vault.read(file);
                     child.dataset.filePath = file.path;
@@ -110,7 +101,7 @@ export default class MyPlugin extends Plugin {
                         // 3. 调用我们自己的函数来打开编辑器
                         this.initView(file);
                     });
-                    
+
                     // 为了更好的用户体验，让鼠标悬停时显示为“可点击”的手形光标
                     child.style.cursor = 'pointer';
 
@@ -128,6 +119,39 @@ export default class MyPlugin extends Plugin {
         // viewHTML = viewHTML.replace("<!--SCRIPT_PLACEHOLDER-->", `<script src="${jsUrl1}"></script><script src="${jsUrl2}"></script><script src="${jsUrl3}"></script>`);
     }
 
+    async htmlToPdfBuffer(html: string): Promise<Buffer> {
+        return new Promise((resolve, reject) => {
+                // @ts-ignore
+            const electron = require('electron');
+
+            // 创建隐藏窗口
+            const win = new electron.remote.BrowserWindow({
+                show: false,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                },
+            });
+
+            win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+
+            win.webContents.on('did-finish-load', async () => {
+                try {
+                    // 导出 PDF
+                    const pdfBuffer = await win.webContents.printToPDF({
+                        printBackground: true,
+                        marginsType: 1,
+                    });
+                    win.close();
+                    resolve(pdfBuffer);
+                } catch (err) {
+                    win.close();
+                    reject(err);
+                }
+            });
+        });
+    }
+
     handleEditorMenu(menu: Menu, editor: Editor, view: MarkdownView, ctx?: any) {
         const hostView = this.workspace.getActiveViewOfType(MarkdownView);
         if (!hostView || hostView !== view) {
@@ -138,10 +162,33 @@ export default class MyPlugin extends Plugin {
         menu.addItem((item) => {
             item.setTitle('Insert Graph')
                 .setIcon('graph')
-                .onClick(async() => {
+                .onClick(async () => {
                     this.initView();
                 });
         });
+
+        if (hostView.previewMode?.containerEl) {
+            menu.addItem((item) => {
+            item.setTitle('Open In Whiteboard')
+                .setIcon('document')
+                .onClick(async () => {
+                    // 1. 获取当前文档内容
+                    const file = hostView.file;
+                    if (!file) return;
+
+                    const markdown = await this.vault.read(file);
+                    
+                    const el = document.createElement('div')
+                    await MarkdownRenderer.render(this.app, markdown, el, normalizePath(file.path), this)
+                    const pdfBuffer = await this.htmlToPdfBuffer(el.innerHTML);
+                    const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
+
+                    const leaf = this.app.workspace.getLeaf(false); // false 表示主区域
+                    await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
+                    this.app.workspace.setActiveLeaf(leaf, {focus: true});
+                });
+            });
+        }
     }
 
     activeLeafPath(workspace: Workspace) {
@@ -158,7 +205,7 @@ export default class MyPlugin extends Plugin {
 
     async initView(file: TFile | null = null) {
         const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
-        
+
         if (!file) {
             await this.ensureFolderExists('__data__/zyb/graphs');
             file = await this.app.vault.create(`__data__/zyb/graphs/${Date.now()}.graph`, `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<svg xmlns="http://www.w3.org/2000/svg" version="1.1">\n</svg>`);
@@ -177,7 +224,7 @@ export default class MyPlugin extends Plugin {
         }
     }
 
-	private attachMouseupListener() {
+    private attachMouseupListener() {
         const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
         const cm = (editor as any)?.cm;
         if (cm?.contentDOM) {
@@ -195,12 +242,12 @@ export default class MyPlugin extends Plugin {
 
     private onEditorMouseUp = (event: MouseEvent) => {
         if (this.formatting) {
-			this.applyFormat();
-		}
+            this.applyFormat();
+        }
     }
-	
-	private applyFormat() {
-		const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+
+    private applyFormat() {
+        const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
 
         if (!editor) return;
 
@@ -208,7 +255,7 @@ export default class MyPlugin extends Plugin {
         const selectedText = editor.getSelection();
         // 示例: 只是简单地显示选中的内容
 
-		if (!selectedText) return;
+        if (!selectedText) return;
 
         const from = editor.getCursor("from");
         const to = editor.getCursor("to");
@@ -233,20 +280,20 @@ export default class MyPlugin extends Plugin {
             return;
         }
 
-		let formatted = selectedText
-			.replace(/（/g, '(')
-			.replace(/）/g, ')')
-			.replace(/，/g, ',')
-			.replace(/；/g, ';')
+        let formatted = selectedText
+            .replace(/（/g, '(')
+            .replace(/）/g, ')')
+            .replace(/，/g, ',')
+            .replace(/；/g, ';')
 
-		formatted = '$' + formatted + '$';
-        
+        formatted = '$' + formatted + '$';
+
         // 这里添加您的格式处理逻辑
         // 示例: 保持选中内容不变
         editor.replaceSelection(formatted);
-    }  
-	
-	onunload() {
+    }
+
+    onunload() {
         // Clean up event listener on unload
         if (this.lastWrapper) {
             this.lastWrapper.removeEventListener('mouseup', this.onEditorMouseUp);
@@ -283,48 +330,116 @@ export default class MyPlugin extends Plugin {
         } catch (err) {
             console.warn(err);
             throw new Error(
-            `无法加载远程脚本：${filename}。请检查网络连接或在 GitHub 上提交问题报告。`
+                `无法加载远程脚本：${filename}。请检查网络连接或在 GitHub 上提交问题报告。`
             );
         }
     }
 }
 
 function insertMetadata(svgString: string, metadataObj: any) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(svgString, "image/svg+xml");
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgString, "image/svg+xml");
 
-        // 创建 <metadata> 元素
-        const metadataEl = doc.createElement("metadata");
-        metadataEl.setAttribute("id", "zyb-metadata");
-        metadataEl.textContent = JSON.stringify(metadataObj);
+    // 创建 <metadata> 元素
+    const metadataEl = doc.createElement("metadata");
+    metadataEl.setAttribute("id", "zyb-metadata");
+    metadataEl.textContent = JSON.stringify(metadataObj);
 
-        // 插入到 <svg> 根节点中
-        const svgRoot = doc.documentElement;
-        const existing = svgRoot.querySelector("metadata#zyb-metadata");
-        if (existing) {
-            svgRoot.replaceChild(metadataEl, existing);
-        } else {
-            svgRoot.insertBefore(metadataEl, svgRoot.firstChild);
-        }
-
-        // 序列化回字符串
-        const serializer = new XMLSerializer();
-        return serializer.serializeToString(doc);
+    // 插入到 <svg> 根节点中
+    const svgRoot = doc.documentElement;
+    const existing = svgRoot.querySelector("metadata#zyb-metadata");
+    if (existing) {
+        svgRoot.replaceChild(metadataEl, existing);
+    } else {
+        svgRoot.insertBefore(metadataEl, svgRoot.firstChild);
     }
 
-function    readMetadata(svgString: string) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(svgString, "image/svg+xml");
-        const metadata = doc.querySelector("metadata#zyb-metadata");
-        if (metadata) {
-            try {
+    // 序列化回字符串
+    const serializer = new XMLSerializer();
+    return serializer.serializeToString(doc);
+}
+
+function readMetadata(svgString: string) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgString, "image/svg+xml");
+    const metadata = doc.querySelector("metadata#zyb-metadata");
+    if (metadata) {
+        try {
             return JSON.parse(metadata.textContent!);
-            } catch {
+        } catch {
             return null;
-            }
         }
-        return null;
     }
+    return null;
+}
+
+class WhiteboardView extends ItemView {
+    workspace: Workspace;
+    vault: Vault;
+    plugin: MyPlugin;
+    pdfBlob: Blob;
+
+    getViewType(): string {
+        return 'whiteboard-view';
+    }
+
+    getDisplayText(): string {
+        return "zyb private classroom"
+    }
+
+    constructor(plugin: MyPlugin, leaf: WorkspaceLeaf, pdfBlob: Blob) {
+        super(leaf);
+
+        this.plugin = plugin;
+        this.workspace = this.app.workspace;
+        this.vault = this.app.vault;
+        this.pdfBlob = pdfBlob;
+    }
+
+    async onOpen(): Promise<void> {
+        const container = this.containerEl.children[1] as HTMLElement;
+
+        container.style.position = 'relative';
+        container.style.width = '100%';
+        container.style.height = '100%';
+        container.style.overflow = 'hidden';
+
+        const iframe = document.createElement('iframe');
+        iframe.style.position = 'absolute';
+        iframe.style.top = '0';
+        iframe.style.left = '0';
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        iframe.sandbox.add("allow-scripts")
+        iframe.sandbox.add("allow-same-origin")
+        iframe.sandbox.add("allow-forms")
+        iframe.style.border = 'none';
+        iframe.style.outline = 'none';
+        iframe.style.overflow = 'hidden';
+        iframe.setAttribute('scrolling', 'no')
+        iframe.src = `http://localhost:9527/whiteboard.html`
+        // 插入 iframe 并写入内容
+        container.innerHTML = '';
+        container.appendChild(iframe);
+
+        let r: any;
+        const p = new Promise<void>((resolve, reject) => {
+            r = resolve;
+        })
+        iframe.onload = () => {
+            const container = this.containerEl.children[1] as HTMLElement;
+            console.log(this.pdfBlob);
+            (container.children[0] as any).contentWindow!.postMessage({ 
+                command: 'open-pdf', 
+                pdf: this.pdfBlob
+            }, '*');
+            r();
+        }
+
+        await p;
+    }
+}
 
 class GraphView extends FileView {
     workspace: Workspace;
@@ -337,27 +452,27 @@ class GraphView extends FileView {
             let svg = event.data.svg;
 
             svg = insertMetadata(svg, source);
-        
+
             await this.vault.adapter.write(normalizePath(filePath), svg);
 
             // 3. 遍历所有打开的 Markdown 窗口 (WorkspaceLeaf)
             this.app.workspace.getLeavesOfType('markdown').forEach(leaf => {
                 // 安全地获取视图的 DOM 容器
                 if (leaf.view instanceof MarkdownView) {
-                const viewEl = leaf.view.contentEl;
-                
-                // 4. 这是核心：利用我们之前添加的 `data-file-path` 属性，
-                //    精准找到所有正在显示这张图片的 DIV 容器
-                const targetDivs: NodeListOf<HTMLDivElement> = 
-                    viewEl.querySelectorAll(`div[data-file-path="${filePath}"]`);
+                    const viewEl = leaf.view.contentEl;
 
-                // 5. 遍历所有找到的容器，并更新它们的内容
-                if (targetDivs.length > 0) {
-                    targetDivs.forEach(divEl => {
-                    // 直接用最新的 SVG 内容替换掉旧的 HTML
-                    divEl.innerHTML = svg;
-                    });
-                }
+                    // 4. 这是核心：利用我们之前添加的 `data-file-path` 属性，
+                    //    精准找到所有正在显示这张图片的 DIV 容器
+                    const targetDivs: NodeListOf<HTMLDivElement> =
+                        viewEl.querySelectorAll(`div[data-file-path="${filePath}"]`);
+
+                    // 5. 遍历所有找到的容器，并更新它们的内容
+                    if (targetDivs.length > 0) {
+                        targetDivs.forEach(divEl => {
+                            // 直接用最新的 SVG 内容替换掉旧的 HTML
+                            divEl.innerHTML = svg;
+                        });
+                    }
                 }
             });
         }
@@ -377,7 +492,7 @@ class GraphView extends FileView {
         if (!listenerReged) {
             window.addEventListener('message', this.onMessage)
             listenerReged = true;
-        } 
+        }
     }
 
     async onOpen() {
@@ -402,7 +517,7 @@ class GraphView extends FileView {
         iframe.style.outline = 'none';
         iframe.style.overflow = 'hidden';
         iframe.setAttribute('scrolling', 'no')
-        iframe.src = `http://localhost:9527/index.html`
+        iframe.src = `http://localhost:9527/graph.html`
         // 插入 iframe 并写入内容
         container.innerHTML = '';
         container.appendChild(iframe);
@@ -423,7 +538,7 @@ class GraphView extends FileView {
 
     async onLoadFile(file: TFile): Promise<void> {
         const container = this.containerEl.children[1] as HTMLElement;
-        (container.children[0] as any).contentWindow!.postMessage({command: 'file', path:file.path, source: readMetadata(await this.vault.adapter.read(normalizePath(file.path))) || ''}, '*');
+        (container.children[0] as any).contentWindow!.postMessage({ command: 'file', path: file.path, source: readMetadata(await this.vault.adapter.read(normalizePath(file.path))) || '' }, '*');
         this.file = file;
     }
 
