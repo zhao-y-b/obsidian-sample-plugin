@@ -123,7 +123,6 @@ export default class MyPlugin extends Plugin {
         return new Promise((resolve, reject) => {
                 // @ts-ignore
             const electron = require('electron');
-
             // 创建隐藏窗口
             const win = new electron.remote.BrowserWindow({
                 show: false,
@@ -189,10 +188,6 @@ export default class MyPlugin extends Plugin {
                 });
             });
         }
-    }
-
-    activeLeafPath(workspace: Workspace) {
-        return workspace.activeLeaf?.view.getState().file as string;
     }
 
     async ensureFolderExists(folderPath: string) {
@@ -384,7 +379,7 @@ class WhiteboardView extends ItemView {
     }
 
     getDisplayText(): string {
-        return "zyb private classroom"
+        return ""
     }
 
     constructor(plugin: MyPlugin, leaf: WorkspaceLeaf, pdfBlob: Blob) {
@@ -397,6 +392,7 @@ class WhiteboardView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.workspace.leftSplit.collapse();
         const container = this.containerEl.children[1] as HTMLElement;
 
         container.style.position = 'relative';
@@ -429,7 +425,6 @@ class WhiteboardView extends ItemView {
         })
         iframe.onload = () => {
             const container = this.containerEl.children[1] as HTMLElement;
-            console.log(this.pdfBlob);
             (container.children[0] as any).contentWindow!.postMessage({ 
                 command: 'open-pdf', 
                 pdf: this.pdfBlob
@@ -438,6 +433,10 @@ class WhiteboardView extends ItemView {
         }
 
         await p;
+    }
+
+    protected async onClose(): Promise<void> {
+        this.workspace.leftSplit.expand();
     }
 }
 
