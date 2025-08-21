@@ -29,7 +29,7 @@ export default class MyPlugin extends Plugin {
             console.log(err)
         })
 
-        addIcon("graph", `<svg
+        addIcon("graph-icon", `<svg
             version="1.1"
             viewBox="0 0 100 100"
             id="svg10"
@@ -48,6 +48,8 @@ export default class MyPlugin extends Plugin {
             id="path6"
             style="display:inline" />
             </svg>`);
+
+        addIcon("whiteboard-icon", `<svg t="1755394880435" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5903"><path d="M343.101334 452.785633l-18.942864 30.359778 31.537308-15.15429-12.594444-15.205488zM317.963642 383.055417c3.123013-9.113053 9.420235-18.226106 15.717457-24.267344l264.790513-230.539768c25.188889-21.195528 63.023419-18.17491 85.089294 3.071816l40.957543 42.442253c22.065876 24.267344 18.942863 60.66836-3.123013 81.915085L453.430714 486.114833c-6.297222 6.092434-18.942863 12.133672-28.363098 15.154291l-154.461132 63.688979c-3.123013 0-3.123013 0-6.297223 3.071815-12.594444 3.020619-22.014679-3.071816-31.537307-12.133672-6.297222-9.113053-6.297222-21.246725-3.123013-30.359778l88.263504-142.532248z m321.516709-212.313662L374.587445 401.230326l40.957542 42.493451 264.739316-230.539768-40.957543-42.49345z" fill="#333333" p-id="5904"></path><path d="M653.559506 857.906926h-280.047197L304.140472 1006.531608c-5.990041 15.154291-24.062556 21.195528-39.16565 15.154291-15.051897-6.092434-21.041937-24.267344-15.051897-39.421635L307.212287 857.906926H27.16509a27.083175 27.083175 0 0 1-27.134372-27.287963c0-15.154291 12.031278-27.287963 27.134372-27.287963h966.700398c15.051897 0 27.134372 12.133672 27.134372 27.287963a27.083175 27.083175 0 0 1-27.134372 27.287963h-280.047197l57.186969 124.306141c5.990041 15.154291 0 30.308581-15.051897 36.349819-15.051897 6.092434-30.154991 0-36.145031-12.082475l-66.248826-148.573485zM114.455853 0h798.108913c30.103794 0 60.207588 12.133672 81.300722 33.3292 18.072516 21.246725 30.103794 51.555307 30.103794 81.915085v515.297083c0 30.308581-12.031278 60.617163-33.124413 81.863888-21.093134 21.195528-51.196928 33.3292-81.300722 33.3292H114.455853a115.961042 115.961042 0 0 1-81.300722-33.3292A117.548147 117.548147 0 0 1 0.030718 630.541368V115.193088C0.030718 51.555307 51.227646 0 114.455853 0z m0 57.596544A57.34056 57.34056 0 0 0 57.268884 115.193088v515.34828c0 30.308581 24.062556 57.596544 57.186969 57.596544h798.108913a57.34056 57.34056 0 0 0 57.186969-57.596544V115.193088a57.34056 57.34056 0 0 0-57.186969-57.596544H114.455853z" fill="#333333" p-id="5905"></path></svg>`);
 
         // This adds a simple command that can be triggered anywhere
         this.addCommand({
@@ -72,10 +74,10 @@ export default class MyPlugin extends Plugin {
             this.app.workspace.on('editor-menu', this.handleEditorMenu, this)
         )
 
-        this.registerView(
-            'graph-view', // 这是视图的唯一标识符，我们通常定义为一个常量
-            (leaf: WorkspaceLeaf) => new GraphView(this, leaf));
-        this.registerExtensions(['graph'], 'graph-view')
+        // this.registerView(
+        //     'graph-view', // 这是视图的唯一标识符，我们通常定义为一个常量
+        //     (leaf: WorkspaceLeaf) => new GraphView(this, leaf));
+        //this.registerExtensions(['graph'], 'graph-view')
 
         this.registerMarkdownCodeBlockProcessor(
             'zyb-graph',
@@ -92,7 +94,7 @@ export default class MyPlugin extends Plugin {
                     child.innerHTML = await this.vault.read(file);
                     child.dataset.filePath = file.path;
 
-                    child.addEventListener('click', (event) => {
+                    child.addEventListener('dblclick', (event) => {
                         // 2. 阻止事件继续传播，这一点非常重要！
                         //    它会阻止 Obsidian 执行默认的“切换到代码块”行为。
                         event.stopPropagation();
@@ -110,6 +112,12 @@ export default class MyPlugin extends Plugin {
                 }
             }
         );
+
+        this.addRibbonIcon('whiteboard-icon', 'Open Whiteboard', async () => {
+            const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
+            await leaf.open(new WhiteboardView(this, leaf));
+            this.app.workspace.setActiveLeaf(leaf, { focus: true });
+        });
         // const jsBlob1 = new Blob([s1], { type: 'text/javascript' });
         // const jsUrl1 = URL.createObjectURL(jsBlob1);
         // const jsBlob2 = new Blob([s1], { type: 'text/javascript' });
@@ -121,7 +129,7 @@ export default class MyPlugin extends Plugin {
 
     async htmlToPdfBuffer(html: string): Promise<Buffer> {
         return new Promise((resolve, reject) => {
-                // @ts-ignore
+            // @ts-ignore
             const electron = require('electron');
             // 创建隐藏窗口
             const win = new electron.remote.BrowserWindow({
@@ -160,7 +168,7 @@ export default class MyPlugin extends Plugin {
         // Add a custom menu item
         menu.addItem((item) => {
             item.setTitle('Insert Graph')
-                .setIcon('graph')
+                .setIcon('graph-icon')
                 .onClick(async () => {
                     this.initView();
                 });
@@ -168,24 +176,24 @@ export default class MyPlugin extends Plugin {
 
         if (hostView.previewMode?.containerEl) {
             menu.addItem((item) => {
-            item.setTitle('Open In Whiteboard')
-                .setIcon('document')
-                .onClick(async () => {
-                    // 1. 获取当前文档内容
-                    const file = hostView.file;
-                    if (!file) return;
+                item.setTitle('Open In Whiteboard')
+                    .setIcon('document')
+                    .onClick(async () => {
+                        // 1. 获取当前文档内容
+                        const file = hostView.file;
+                        if (!file) return;
 
-                    const markdown = await this.vault.read(file);
-                    
-                    const el = document.createElement('div')
-                    await MarkdownRenderer.render(this.app, markdown, el, normalizePath(file.path), this)
-                    const pdfBuffer = await this.htmlToPdfBuffer(el.innerHTML);
-                    const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
+                        const markdown = await this.vault.read(file);
 
-                    const leaf = this.app.workspace.getLeaf(false); // false 表示主区域
-                    await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
-                    this.app.workspace.setActiveLeaf(leaf, {focus: true});
-                });
+                        const el = document.createElement('div')
+                        await MarkdownRenderer.render(this.app, markdown, el, normalizePath(file.path), this)
+                        const pdfBuffer = await this.htmlToPdfBuffer(el.innerHTML);
+                        const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
+
+                        const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
+                        await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
+                        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+                    });
             });
         }
     }
@@ -206,17 +214,19 @@ export default class MyPlugin extends Plugin {
             file = await this.app.vault.create(`__data__/zyb/graphs/${Date.now()}.graph`, `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<svg xmlns="http://www.w3.org/2000/svg" version="1.1">\n</svg>`);
             const cursor = hostView.editor.getCursor();
             hostView.editor.replaceRange(`\`\`\`zyb-graph\n${file.path}\n\`\`\``, cursor);
-        } else {
-            for (const view of this.workspace.getLeavesOfType('graph-view')) {
-                if (view.view instanceof GraphView) {
-                    view.openFile(file);
-                    return await this.workspace.revealLeaf(view);
-                }
-            }
-
-            const leaf = this.workspace.getLeaf('split', 'vertical');
-            await leaf.openFile(file)
         }
+
+        for (const view of this.workspace.getLeavesOfType('graph-view')) {
+            if (view.view instanceof GraphView) {
+                await view.view.onLoadFile(file);
+                return await this.workspace.revealLeaf(view);
+            }
+        }
+
+        const leaf = this.workspace.getLeaf('split', 'vertical');
+        const gv = new GraphView(this, leaf);
+        await leaf.open(gv);
+        await gv.onLoadFile(file);
     }
 
     private attachMouseupListener() {
@@ -372,7 +382,7 @@ class WhiteboardView extends ItemView {
     workspace: Workspace;
     vault: Vault;
     plugin: MyPlugin;
-    pdfBlob: Blob;
+    pdfBlob: Blob | undefined;
 
     getViewType(): string {
         return 'whiteboard-view';
@@ -382,7 +392,7 @@ class WhiteboardView extends ItemView {
         return ""
     }
 
-    constructor(plugin: MyPlugin, leaf: WorkspaceLeaf, pdfBlob: Blob) {
+    constructor(plugin: MyPlugin, leaf: WorkspaceLeaf, pdfBlob: Blob | undefined = undefined) {
         super(leaf);
 
         this.plugin = plugin;
@@ -424,11 +434,13 @@ class WhiteboardView extends ItemView {
             r = resolve;
         })
         iframe.onload = () => {
-            const container = this.containerEl.children[1] as HTMLElement;
-            (container.children[0] as any).contentWindow!.postMessage({ 
-                command: 'open-pdf', 
-                pdf: this.pdfBlob
-            }, '*');
+            if (this.pdfBlob) {
+                const container = this.containerEl.children[1] as HTMLElement;
+                (container.children[0] as any).contentWindow!.postMessage({
+                    command: 'open-pdf',
+                    pdf: this.pdfBlob
+                }, '*');
+            }
             r();
         }
 
@@ -436,7 +448,9 @@ class WhiteboardView extends ItemView {
     }
 
     protected async onClose(): Promise<void> {
-        this.workspace.leftSplit.expand();
+        if (this.workspace.getLeavesOfType('whiteboard-view').length === 0) {
+            this.workspace.leftSplit.expand();
+        }
     }
 }
 
