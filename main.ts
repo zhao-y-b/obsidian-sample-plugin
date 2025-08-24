@@ -114,9 +114,24 @@ export default class MyPlugin extends Plugin {
         );
 
         this.addRibbonIcon('whiteboard-icon', 'Open Whiteboard', async () => {
-            const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
-            await leaf.open(new WhiteboardView(this, leaf));
-            this.app.workspace.setActiveLeaf(leaf, { focus: true });
+            const electron = require('electron');
+            const win = new electron.remote.BrowserWindow({
+                width: 800,
+                height: 600,
+                frame: true,  // 移除默认边框和标题栏
+                autoHideMenuBar: true,
+                webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false
+                }
+            });
+            win.maximize();
+            win.setMenuBarVisibility(false);
+            win.loadURL(`http://localhost:9527/blackboard.html`);
+
+            // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
+            // await leaf.open(new WhiteboardView(this, leaf));
+            // this.app.workspace.setActiveLeaf(leaf, { focus: true });
         });
         // const jsBlob1 = new Blob([s1], { type: 'text/javascript' });
         // const jsUrl1 = URL.createObjectURL(jsBlob1);
@@ -187,12 +202,30 @@ export default class MyPlugin extends Plugin {
 
                         const el = document.createElement('div')
                         await MarkdownRenderer.render(this.app, markdown, el, normalizePath(file.path), this)
-                        const pdfBuffer = await this.htmlToPdfBuffer(el.innerHTML);
-                        const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
+                        const pdfBuffer = Uint8Array.from(await this.htmlToPdfBuffer(el.innerHTML));
+                        //const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
 
-                        const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
-                        await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
-                        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+                        // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
+                        // await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
+                        // this.app.workspace.setActiveLeaf(leaf, { focus: true });
+                                        const electron = require('electron');
+                        const win = new electron.remote.BrowserWindow({
+                            width: 800,
+                            height: 600,
+                            frame: true,  // 移除默认边框和标题栏
+                            autoHideMenuBar: true,
+                            webPreferences: {
+                            nodeIntegration: true,
+                            contextIsolation: false
+                            }
+                        });
+                        win.maximize();
+                        win.setMenuBarVisibility(false);
+                        win.loadURL(`http://localhost:9527/blackboard.html`);
+
+                        win.webContents.on('did-finish-load', () => {
+        win.webContents.send('open-pdf', pdfBuffer);
+                        });
                     });
             });
         }
@@ -424,7 +457,7 @@ class WhiteboardView extends ItemView {
         iframe.style.outline = 'none';
         iframe.style.overflow = 'hidden';
         iframe.setAttribute('scrolling', 'no')
-        iframe.src = `http://localhost:9527/whiteboard.html`
+        iframe.src = `http://localhost:9527/blackboard.html`
         // 插入 iframe 并写入内容
         container.innerHTML = '';
         container.appendChild(iframe);
