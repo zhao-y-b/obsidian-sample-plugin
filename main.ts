@@ -116,19 +116,19 @@ export default class MyPlugin extends Plugin {
         this.addRibbonIcon('whiteboard-icon', 'Open Whiteboard', async () => {
             const electron = require('electron');
             const win = new electron.remote.BrowserWindow({
-                width: 800,
-                height: 600,
+                maximize: true,
+                show:false,
                 frame: true,  // 移除默认边框和标题栏
                 autoHideMenuBar: true,
                 webPreferences: {
-                nodeIntegration: true,
-                contextIsolation: false
+                    nodeIntegration: true,
+                    contextIsolation: false
                 }
             });
             win.maximize();
             win.setMenuBarVisibility(false);
             win.loadURL(`http://localhost:9527/blackboard.html`);
-
+            win.show();
             // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
             // await leaf.open(new WhiteboardView(this, leaf));
             // this.app.workspace.setActiveLeaf(leaf, { focus: true });
@@ -208,23 +208,24 @@ export default class MyPlugin extends Plugin {
                         // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
                         // await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
                         // this.app.workspace.setActiveLeaf(leaf, { focus: true });
-                                        const electron = require('electron');
+                        const electron = require('electron');
                         const win = new electron.remote.BrowserWindow({
-                            width: 800,
-                            height: 600,
+                            maximize: true,
+                            show:false,
                             frame: true,  // 移除默认边框和标题栏
                             autoHideMenuBar: true,
                             webPreferences: {
-                            nodeIntegration: true,
-                            contextIsolation: false
+                                nodeIntegration: true,
+                                contextIsolation: false
                             }
                         });
                         win.maximize();
                         win.setMenuBarVisibility(false);
                         win.loadURL(`http://localhost:9527/blackboard.html`);
+                        win.show();
 
                         win.webContents.on('did-finish-load', () => {
-        win.webContents.send('open-pdf', pdfBuffer);
+                            win.webContents.send('open-pdf', pdfBuffer);
                         });
                     });
             });
