@@ -117,7 +117,7 @@ export default class MyPlugin extends Plugin {
             const electron = require('electron');
             const win = new electron.remote.BrowserWindow({
                 maximize: true,
-                show:false,
+                show: false,
                 frame: true,  // 移除默认边框和标题栏
                 autoHideMenuBar: true,
                 webPreferences: {
@@ -174,6 +174,7 @@ export default class MyPlugin extends Plugin {
         });
     }
 
+
     handleEditorMenu(menu: Menu, editor: Editor, view: MarkdownView, ctx?: any) {
         const hostView = this.workspace.getActiveViewOfType(MarkdownView);
         if (!hostView || hostView !== view) {
@@ -201,7 +202,41 @@ export default class MyPlugin extends Plugin {
                         const markdown = await this.vault.read(file);
 
                         const el = document.createElement('div')
-                        await MarkdownRenderer.render(this.app, markdown, el, normalizePath(file.path), this)
+                        await MarkdownRenderer.render(this.app, markdown, el, (file.path), this)
+                        const imgs = el.querySelectorAll('img');
+                        const vaultBasePath = (this.vault.adapter as any).getBasePath();
+
+                        const imgTasks = [];
+                        for (let i = 0; i < imgs.length; i++) {
+                            const img = imgs[i];
+                            let src = img.getAttribute('src');
+                            if (src) {
+                                const match = src.match(/^app:\/\/[a-fA-F0-9]{36}\/([^?]+)(\?.*)?$/);
+                                if (match) {
+                                    const absPath = decodeURIComponent(match[1]);
+                                    const vaultBasePathNorm = normalizePath(vaultBasePath);
+                                    const absPathNorm = normalizePath(absPath);
+                                    if (absPathNorm.startsWith(vaultBasePathNorm)) {
+                                        let relPath = absPathNorm.substring(vaultBasePathNorm.length);
+                                        if (relPath.startsWith('/') || relPath.startsWith('\\')) relPath = relPath.slice(1);
+                                        const vaultPath = normalizePath(relPath);
+                                        if (vaultPath) {
+                                            imgTasks.push(
+                                                this.vault.adapter.readBinary(vaultPath).then(imgData => {
+                                                    const ext = vaultPath.split('.').pop()?.toLowerCase() || 'png';
+                                                    const base64 = Buffer.from(imgData).toString('base64');
+                                                    img.setAttribute('src', `data:image/${ext};base64,${base64}`);
+                                                }).catch(err => {
+                                                    console.warn('图片读取失败:', vaultPath, err);
+                                                })
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        await Promise.all(imgTasks);
+                        
                         const pdfBuffer = Uint8Array.from(await this.htmlToPdfBuffer(el.innerHTML));
                         //const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
 
@@ -211,7 +246,7 @@ export default class MyPlugin extends Plugin {
                         const electron = require('electron');
                         const win = new electron.remote.BrowserWindow({
                             maximize: true,
-                            show:false,
+                            show: false,
                             frame: true,  // 移除默认边框和标题栏
                             autoHideMenuBar: true,
                             webPreferences: {
