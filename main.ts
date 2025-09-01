@@ -113,26 +113,26 @@ export default class MyPlugin extends Plugin {
             }
         );
 
-        this.addRibbonIcon('whiteboard-icon', 'Open Whiteboard', async () => {
-            const electron = require('electron');
-            const win = new electron.remote.BrowserWindow({
-                maximize: true,
-                show: false,
-                frame: true,  // 移除默认边框和标题栏
-                autoHideMenuBar: true,
-                webPreferences: {
-                    nodeIntegration: true,
-                    contextIsolation: false
-                }
-            });
-            win.maximize();
-            win.setMenuBarVisibility(false);
-            win.loadURL(`http://localhost:9527/blackboard.html`);
-            win.show();
-            // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
-            // await leaf.open(new WhiteboardView(this, leaf));
-            // this.app.workspace.setActiveLeaf(leaf, { focus: true });
-        });
+        // this.addRibbonIcon('whiteboard-icon', 'Open Whiteboard', async () => {
+        //     const electron = require('electron');
+        //     const win = new electron.remote.BrowserWindow({
+        //         maximize: true,
+        //         show: false,
+        //         frame: true,  // 移除默认边框和标题栏
+        //         autoHideMenuBar: true,
+        //         webPreferences: {
+        //             nodeIntegration: true,
+        //             contextIsolation: false
+        //         }
+        //     });
+        //     win.maximize();
+        //     win.setMenuBarVisibility(false);
+        //     win.loadURL(`http://localhost:9527/blackboard.html`);
+        //     win.show();
+        //     // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
+        //     // await leaf.open(new WhiteboardView(this, leaf));
+        //     // this.app.workspace.setActiveLeaf(leaf, { focus: true });
+        // });
         // const jsBlob1 = new Blob([s1], { type: 'text/javascript' });
         // const jsUrl1 = URL.createObjectURL(jsBlob1);
         // const jsBlob2 = new Blob([s1], { type: 'text/javascript' });
@@ -190,81 +190,44 @@ export default class MyPlugin extends Plugin {
                 });
         });
 
-        if (hostView.previewMode?.containerEl) {
-            menu.addItem((item) => {
-                item.setTitle('Open In Whiteboard')
-                    .setIcon('document')
-                    .onClick(async () => {
-                        // 1. 获取当前文档内容
-                        const file = hostView.file;
-                        if (!file) return;
+        // if (hostView.previewMode?.containerEl) {
+        //     menu.addItem((item) => {
+        //         item.setTitle('Open In Whiteboard')
+        //             .setIcon('document')
+        //             .onClick(async () => {
+        //                 // 1. 获取当前文档内容
+        //                 const file = hostView.file;
+        //                 if (!file) return;
 
-                        const markdown = await this.vault.read(file);
-
-                        const el = document.createElement('div')
-                        await MarkdownRenderer.render(this.app, markdown, el, (file.path), this)
-                        const imgs = el.querySelectorAll('img');
-                        const vaultBasePath = (this.vault.adapter as any).getBasePath();
-
-                        const imgTasks = [];
-                        for (let i = 0; i < imgs.length; i++) {
-                            const img = imgs[i];
-                            let src = img.getAttribute('src');
-                            if (src) {
-                                const match = src.match(/^app:\/\/[a-fA-F0-9]{36}\/([^?]+)(\?.*)?$/);
-                                if (match) {
-                                    const absPath = decodeURIComponent(match[1]);
-                                    const vaultBasePathNorm = normalizePath(vaultBasePath);
-                                    const absPathNorm = normalizePath(absPath);
-                                    if (absPathNorm.startsWith(vaultBasePathNorm)) {
-                                        let relPath = absPathNorm.substring(vaultBasePathNorm.length);
-                                        if (relPath.startsWith('/') || relPath.startsWith('\\')) relPath = relPath.slice(1);
-                                        const vaultPath = normalizePath(relPath);
-                                        if (vaultPath) {
-                                            imgTasks.push(
-                                                this.vault.adapter.readBinary(vaultPath).then(imgData => {
-                                                    const ext = vaultPath.split('.').pop()?.toLowerCase() || 'png';
-                                                    const base64 = Buffer.from(imgData).toString('base64');
-                                                    img.setAttribute('src', `data:image/${ext};base64,${base64}`);
-                                                }).catch(err => {
-                                                    console.warn('图片读取失败:', vaultPath, err);
-                                                })
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        await Promise.all(imgTasks);
+        //                 //const electron = require('electron');
                         
-                        const pdfBuffer = Uint8Array.from(await this.htmlToPdfBuffer(el.innerHTML));
-                        //const pdfBlob = new Blob([Uint8Array.from(pdfBuffer)], { type: 'application/pdf' });
 
-                        // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
-                        // await leaf.open(new WhiteboardView(this, leaf, pdfBlob));
-                        // this.app.workspace.setActiveLeaf(leaf, { focus: true });
-                        const electron = require('electron');
-                        const win = new electron.remote.BrowserWindow({
-                            maximize: true,
-                            show: false,
-                            frame: true,  // 移除默认边框和标题栏
-                            autoHideMenuBar: true,
-                            webPreferences: {
-                                nodeIntegration: true,
-                                contextIsolation: false
-                            }
-                        });
-                        win.maximize();
-                        win.setMenuBarVisibility(false);
-                        win.loadURL(`http://localhost:9527/blackboard.html`);
-                        win.show();
+        //             const pdfBuffer = await (window as any).electron.remote.getCurrentWebContents().printToPDF({
+        //             pageSize: 'A4',
+        //             printBackground: true
+        //             });
+                            
+        //                     const win = new (window as any).electron.remote.BrowserWindow({
+        //                         maximize: true,
+        //                         show: false,
+        //                         frame: true,  // 移除默认边框和标题栏
+        //                         autoHideMenuBar: true,
+        //                         webPreferences: {
+        //                             nodeIntegration: true,
+        //                             contextIsolation: false
+        //                         }
+        //                     });
+        //                     win.maximize();
+        //                     win.setMenuBarVisibility(false);
+        //                     win.loadURL(`http://localhost:9527/blackboard.html`);
+        //                     win.show();
 
-                        win.webContents.on('did-finish-load', () => {
-                            win.webContents.send('open-pdf', pdfBuffer);
-                        });
-                    });
-            });
-        }
+        //                     win.webContents.on('did-finish-load', () => {
+        //                         win.webContents.send('open-pdf', pdfBuffer);
+        //                     });
+        //             });
+        //     });
+        // }
     }
 
     async ensureFolderExists(folderPath: string) {
