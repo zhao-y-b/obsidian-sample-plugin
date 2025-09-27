@@ -1,11 +1,20 @@
-import { App, addIcon, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, MarkdownEditView, Menu, Vault, Workspace, ItemView, WorkspaceLeaf, TAbstractFile, TFile, normalizePath, TextComponent, FileView, MarkdownRenderChild } from 'obsidian';
+import { App, addIcon, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, MarkdownEditView, Menu, Vault, Workspace, ItemView, WorkspaceLeaf, TAbstractFile, TFile, normalizePath, TextComponent, FileView, MarkdownRenderChild, MarkdownPostProcessorContext } from 'obsidian';
 import express from 'express'
 import * as http from 'http';       // 引入 node 的 http 模块，用于服务器类型
 import * as path from 'path'
 import { MarkdownRenderer } from 'obsidian';
+import AsciiMathParser from 'asciimath2tex';
+import { Decoration, DecorationSet, EditorView, ViewUpdate } from '@codemirror/view';
+import e from 'express';
+import { StateField, EditorState, StateEffect, Transaction, RangeSetBuilder } from '@codemirror/state';
 // Remember to rename these classes and interfaces!
 
+const { execFile } = require('child_process')
+
 let listenerReged = false;
+
+const asciimathParser = new AsciiMathParser();
+
 
 export default class MyPlugin extends Plugin {
     private formatting: boolean = false;
@@ -57,27 +66,524 @@ export default class MyPlugin extends Plugin {
             name: 'Format Math Block',
             callback: () => {
                 this.formatting = !this.formatting;
-                new Notice('Formatting toggled: ' + this.formatting);
+                new Notice('Format AsciiMath To Tex: ' + this.formatting);
             }
         });
 
-        this.registerEvent(
-            this.app.workspace.on('active-leaf-change', () => {
-                this.attachMouseupListener();
-            })
-        );
+        // this.registerEvent(
+        //     this.app.workspace.on('active-leaf-change', () => {
+        //         this.attachMouseupListener();
+        //     })
+        // );
 
         // Also attach on plugin load (for the initial editor)
-        this.attachMouseupListener();
+        //this.attachMouseupListener();
 
         this.registerEvent(
             this.app.workspace.on('editor-menu', this.handleEditorMenu, this)
         )
 
-        // this.registerView(
-        //     'graph-view', // 这是视图的唯一标识符，我们通常定义为一个常量
-        //     (leaf: WorkspaceLeaf) => new GraphView(this, leaf));
-        //this.registerExtensions(['graph'], 'graph-view')
+        let dollarsChanged = false;
+        let lastCursor = -1;
+        let lastFormulaStart = -1;
+        function findDollars(state: EditorState): DecorationSet {
+            const builder = new RangeSetBuilder<Decoration>();
+            const text = state.doc.toString();
+
+            // 使用正则表达式找到所有 $...$ 和 $$...$$ 的位置
+            const regex = /(\$\$)(.*?)(\$\$)|(\$)(.*?)(\$)/gs;
+            let match;
+
+            while ((match = regex.exec(text)) !== null) {
+                const from = match.index;
+                const to = match.index + match[0].length;
+
+                // 创建一个 Decoration 对象，它只包含样式信息，没有位置
+                const decoration = Decoration.mark({});
+
+                // 使用 builder.add() 方法将 decoration 和其位置添加到 RangeSetBuilder 中
+                // builder.add() 接受 from, to, 和 decoration 三个参数
+                builder.add(from, to, decoration);
+            }
+
+            dollarsChanged = true;
+            // builder.finish() 方法返回一个正确的 DecorationSet
+            return builder.finish();
+        }
+
+        const dollarPositionsField = StateField.define<DecorationSet>({
+            // 1. 定义初始值
+            create(state: EditorState) {
+                return findDollars(state);
+            },
+
+            // 2. 定义如何根据状态更新计算新值
+            update(dollars: DecorationSet, transaction: Transaction) {
+                // 如果文档没有发生变化，或者变化与公式位置无关，则直接返回旧值
+                if (!transaction.docChanged) {
+                    return dollars;
+                }
+
+                // 否则，重新计算所有公式的位置
+                return findDollars(transaction.state);
+            }
+        });
+
+        function findGrids(state: EditorState): DecorationSet {
+            const builder = new RangeSetBuilder<Decoration>();
+            const text = state.doc.toString();
+
+            // 使用正则表达式找到所有 $...$ 和 $$...$$ 的位置
+            const regex = /(\`\`\`\`grid)(.*?)(\`\`\`\`)/gs;
+            let match;
+
+            while ((match = regex.exec(text)) !== null) {
+                const from = match.index;
+                const to = match.index + match[0].length;
+
+                // 创建一个 Decoration 对象，它只包含样式信息，没有位置
+                const decoration = Decoration.mark({});
+
+                // 使用 builder.add() 方法将 decoration 和其位置添加到 RangeSetBuilder 中
+                // builder.add() 接受 from, to, 和 decoration 三个参数
+                builder.add(from, to, decoration);
+            }
+
+            // builder.finish() 方法返回一个正确的 DecorationSet
+            return builder.finish();
+        }
+
+        const gridPositionsField = StateField.define<DecorationSet>({
+            // 1. 定义初始值
+            create(state: EditorState) {
+                return findGrids(state);
+            },
+
+            // 2. 定义如何根据状态更新计算新值
+            update(grids: DecorationSet, transaction: Transaction) {
+                // 如果文档没有发生变化，或者变化与公式位置无关，则直接返回旧值
+                if (!transaction.docChanged) {
+                    return grids;
+                }
+
+                // 否则，重新计算所有公式的位置
+                return findGrids(transaction.state);
+            }
+        });
+
+        let isEdtingGrid = false;
+        let gridPreview: HTMLElement | null = null;
+        let gridPreviewRender: any
+        this.registerEditorExtension([
+            dollarPositionsField,
+            gridPositionsField,
+
+            EditorView.updateListener.of(async (update: ViewUpdate) => {
+                if (!this.formatting) return;
+
+                // 仅在 selection 发生变化时处理
+                // if (update.selectionSet) {
+                //     if (this.formatting) {
+
+                //         const editor = update.view;
+                //         const doc = editor.state.doc;
+                //         const selection = editor.state.selection.main;
+
+                //         // 空选择不处理
+                //         if (!selection.empty) {
+
+                //             const start = selection.from;
+                //             const end = selection.to;
+
+                //             // 获取选区前后一个字符
+                //             const charBefore = start > 0 ? doc.sliceString(start - 1, start) : null;
+                //             const charAfter = end < doc.length ? doc.sliceString(end, end + 1) : null;
+
+                //             // 判断是否前后都是 '$'
+                //             const isSurroundedByDollar = charBefore === "$" && charAfter === "$";
+
+                //             if (isSurroundedByDollar) {
+                //                 const selectedText = doc.sliceString(start, end);
+                //                 // 在这里执行你的逻辑：预览、转换、高亮等
+                //                 if (!selectedText.includes('\\')) {
+                //                     let tex = asciimathParser.parse(selectedText);
+                //                     this.app.workspace.activeEditor?.editor?.replaceSelection(tex);
+                //                 } else {
+                //                     let text = selectedText.trim();
+                //                     if (text.startsWith('\\displaystyle')) {
+                //                         this.app.workspace.activeEditor?.editor?.replaceSelection(text.replace('\\displaystyle', '').trim());
+                //                     }
+                //                 }
+                //             }
+                //         }
+                //     }
+                // }
+
+                if (update.selectionSet) {
+                    const cursorPos = update.view.state.selection.main.head;
+                    const editor = this.app.workspace.activeEditor?.editor;
+                    if (editor) {
+                        const allGridRanges = update.view.state.field(gridPositionsField);
+                        const cursorPos = update.view.state.selection.main.head;
+
+                        let gridStart = -1;
+                        let gridEnd = -1;
+                        allGridRanges.between(cursorPos, cursorPos, (from, to, value) => {
+                            if (cursorPos > from && cursorPos < to) {
+                                gridStart = from;
+                                gridEnd = to;
+                                return false;
+                            }
+                        });
+
+
+                        if (gridStart !== -1 && gridEnd !== -1) {
+                            const activeLeaf = this.app.workspace.activeLeaf;
+                            if (!activeLeaf) return;
+                            isEdtingGrid = true;
+
+                            if (gridPreviewRender) clearTimeout(gridPreviewRender);
+                            gridPreviewRender = setTimeout(async () => {
+                            const container = document.createElement('div');
+                            container.style.position = 'fixed';
+                            container.style.zIndex = '9999';
+                            container.style.left = "-9999px";
+                            container.style.top = "0px";
+                            container.style.backgroundColor = "#fff"
+                            document.body.appendChild(container);
+                                await MarkdownRenderer.render(this.app, editor.getRange(editor.offsetToPos(gridStart), editor.offsetToPos(gridEnd)), container, this.app.workspace.activeEditor!.file!.path, new MarkdownRenderChild(container));
+                                (container.firstChild as HTMLElement).style.left = "0px"
+                                if (gridPreview) {
+                                    document.body.removeChild(gridPreview)
+                                }
+                                container.style.left = "0px"
+                                gridPreview = container;
+                            }, 1000);
+                        } else {
+                            if (gridPreviewRender) clearTimeout(gridPreviewRender);
+                            if (isEdtingGrid) {
+                                if (gridPreview) {
+                                    gridPreview.style.display = 'none'
+                                }
+                            }
+                            isEdtingGrid = false;
+                        }
+                    }
+                }
+
+                if (update.selectionSet) {
+                    const allDollarRanges = update.view.state.field(dollarPositionsField);
+                    const cursorPos = update.view.state.selection.main.head;
+
+                    if (!dollarsChanged && lastCursor === cursorPos) {
+                        return;
+                    }
+                    lastCursor = cursorPos;
+                    dollarsChanged = false;
+
+                    let isInFormula = false;
+                    let formulaStart = -1;
+                    allDollarRanges.between(cursorPos, cursorPos, (from, to, value) => {
+                        if (cursorPos > from && cursorPos < to) {
+                            isInFormula = true;
+                            formulaStart = from;
+                            return false;
+                        }
+                    });
+
+                    if (lastFormulaStart !== -1) {
+                        if (lastFormulaStart !== formulaStart) {
+                            // 从一个代码块中跳出。执行转换。
+                            // 从start 计算 end也就是下一个$点, allDollarRanges或许还没更新
+                            let lastEnd = -1;
+                            allDollarRanges.between(cursorPos, cursorPos, (from, to, value) => {
+                                if (from === lastFormulaStart) {
+                                    lastEnd = to;
+                                    return false;
+                                }
+                            })
+                            if (lastEnd !== -1) {
+                                const math = update.view.state.doc.sliceString(lastFormulaStart + 1, lastEnd - 1);
+                                if (!math.includes('\\')) {
+                                    this.app.workspace.activeEditor?.editor?.replaceRange('\\displaystyle ' + asciimathParser.parse(math).replaceAll('\\left', '').replaceAll('\\right', ''),
+                                        this.app.workspace.activeEditor?.editor?.offsetToPos(lastFormulaStart + 1),
+                                        this.app.workspace.activeEditor?.editor?.offsetToPos(lastEnd - 1));
+                                }
+                            }
+                        }
+                    }
+                    lastFormulaStart = formulaStart
+
+                    if (this.formatting) {
+                        if (isInFormula) {
+                            this.switchToEnglish();
+                        } else {
+                            this.switchToChinese();
+                        }
+                    }
+                }
+
+
+                // 新增：处理输入变化，检测连续的///
+                if (update.transactions.some(tr => tr.isUserEvent('input'))) {
+                    const editor = update.view;
+                    const doc = editor.state.doc;
+                    const lastChange = update.transactions[0]; // 获取最近的输入事务
+
+                    // 从变更中获取输入位置和内容
+                    const changes = lastChange.changes;
+                    let inputText = '';
+                    let pos = -1;
+
+                    // 提取输入的文本和位置
+                    changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+                        inputText = Array.from(inserted).join(''); // 输入的字符
+                        pos = fromA; // 输入位置
+                    });
+
+                    // 只处理单字符输入（连续输入时会逐字符触发）
+                    if (inputText.length !== 1) return;
+
+                    function tripleInput(char: string) {
+                        // 检查当前输入是否为'/'，并检测前两个字符是否也是'/'
+                        if (inputText === char) {
+                            // 确保有足够的前置字符可以检查
+                            if (pos >= 2) {
+                                // 获取当前位置前两个字符
+                                const prev1 = doc.sliceString(pos - 1, pos);
+                                const prev2 = doc.sliceString(pos - 2, pos - 1);
+
+                                // 检测是否形成了///
+                                if (prev1 === char && prev2 === char) {
+                                    // 找到连续的///，执行你的动作
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+
+                    if (tripleInput('/')) {
+                        // 计算///的起始和结束位置
+                        const startPos = pos - 2;
+                        const endPos = pos + 1; // 因为当前输入的/在inputPos位置
+
+                        const start = this.app.workspace.activeEditor?.editor?.offsetToPos(startPos)!;
+                        const end = this.app.workspace.activeEditor?.editor?.offsetToPos(endPos);
+
+                        // 2. 正确替换///为$$（使用EditorPosition参数）
+                        this.app.workspace.activeEditor?.editor?.replaceRange('$$', start, end);
+
+                        // 3. 计算光标位置（$$中间）并转换为EditorPosition
+                        const cursorOffset = startPos + 1;
+                        const cursorPos = this.app.workspace.activeEditor?.editor?.offsetToPos(cursorOffset)!;
+                        this.app.workspace.activeEditor?.editor?.setCursor(cursorPos);
+                    } else if (tripleInput(',')) {
+                        // 后面是不是一个结束的'$'
+                        if (doc.sliceString(pos + 1, pos + 2) === '$') {
+                            // 移除,,,
+                            const a = this.app.workspace.activeEditor?.editor?.offsetToPos(pos - 2)!;
+                            const b = this.app.workspace.activeEditor?.editor?.offsetToPos(pos + 1)!;
+                            this.app.workspace.activeEditor?.editor?.replaceRange('', a, b);
+                            // pos -> pos - 3 -> pos - 2
+                            const cursorPos = this.app.workspace.activeEditor?.editor?.offsetToPos(pos - 1)!;
+                            this.app.workspace.activeEditor?.editor?.setCursor(cursorPos);
+                        }
+                    }
+                }
+            })
+        ]);
+
+
+        const style = document.createElement('style');
+        style.textContent = `
+            .grid-container {
+                position:relative;
+                box-sizing: border-box;
+                margin: 0px;
+                padding: 0px;
+                border: 1px solid #ccc; /* 外边框 */
+            }
+            .grid-cell {
+                position: absolute;
+                margin: 0px;
+                padding: 0px;
+                box-sizing: border-box;
+                /* 关键边框处理：只显示右和下边框，避免重叠 */
+                border-right: 1px solid #ccc;
+                border-bottom: 1px solid #ccc;
+            }
+            /* 最后一列和最后一行移除多余边框 */
+            .grid-cell.last-col { border-right: none; }
+            .grid-cell.last-row { border-bottom: none; }
+        `;
+        document.head.appendChild(style);
+
+        this.registerMarkdownCodeBlockProcessor('runner', async (source, el, ctx) => {
+            window.eval(source)
+        })
+
+        this.registerMarkdownCodeBlockProcessor('grid', async (source, el, ctx) => {
+            el.empty();
+            const lines = source.split('\n').filter(l => l.trim());
+
+            // 解析配置
+            const config = {
+                width: '',
+                height: '',
+                rows: ['*', '*'],
+                cols: ['*', '*'],
+                border: { w: 0, color: '#ccc' },
+                align: 'center',
+                docWidth: 0,
+                padding: { h: 0, v: 0 },
+            };
+            const cells = new Map<string, { content: string, config: string }>();
+
+            lines.forEach(line => {
+                const trim = line.trim();
+                if (trim.startsWith('# height:')) config.height = trim.split(':')[1].trim();
+                if (trim.startsWith('# width:')) config.width = trim.split(':')[1].trim();
+                if (trim.startsWith('# align:')) config.align = trim.split(':')[1].trim();
+                if (trim.startsWith('# rows:')) {
+                    config.rows = trim.split(':')[1].trim().split(/\s+/).filter(d => d);
+                }
+                if (trim.startsWith('# cols:')) {
+                    config.cols = trim.split(':')[1].trim().split(/\s+/).filter(d => d);
+                }
+                if (trim.startsWith('# grid:')) {
+                    const [w, c] = trim.split(':')[1].trim().split(/\s+/);
+                    config.border.w = parseInt(w) || 1;
+                    config.border.color = c || '#ccc';
+                }
+                if (trim.startsWith('# padding:')) {
+                    const [h, v] = trim.split(':')[1].trim().split(/\s+/);
+                    config.padding.h = parseInt(h) || 0;
+                    config.padding.v = parseInt(v) || 0;
+                }
+            });
+
+            const cell_text = source.match(/####(.*?)####/sm)
+            let text = ''
+            if (cell_text) {
+                text = cell_text[1]
+            }
+            const cell_segs = text.split('||').slice(1, -1);
+            for (let i = 0; i < cell_segs.length; i++) {
+                const cell_index = i;
+                const str = cell_segs[i];
+                const row = Math.floor(cell_index / config.cols.length) + 1;
+                const col = (cell_index % config.cols.length) + 1;
+                const im = str.trim().match(/([FLRTB]+\:)?(.*)/sm)
+                if (im) {
+                    cells.set(`${row}-${col}`, {
+                        config: im[1] || '',
+                        content: im[2]
+                    })
+                } else {
+                    cells.set(`${row}-${col}`, {
+                        config: "",
+                        content: "ERROR FORMAT"
+                    })
+                }
+            }
+
+            // 容器尺寸
+            config.docWidth = getDocumentContentWidth()
+            const containerW = config.width !== '' ? parseInt(config.width) : config.docWidth;
+            const containerH = parseInt(config.height);
+
+            // 计算单元格
+            const { cells: cellInfo, rowCount, colCount } = calculateCells(
+                containerW,
+                containerH,
+                config.rows,
+                config.cols
+            );
+
+            // 创建容器
+            el.className = 'grid-container';
+            el.style.width = `${containerW}px`;
+            el.style.height = `${containerH}px`;
+            el.style.borderColor = config.border.color;
+            el.style.borderWidth = `${config.border.w}px`;
+            if (config.align === 'center') {
+                el.style.left = `${(config.docWidth - containerW) / 2}px`;
+            } else if (config.align === 'left') {
+                el.style.left = `0px`;
+            } else if (config.align === 'right') {
+                el.style.left = `${(config.docWidth - containerW)}px`;
+            }
+
+            const renderChild = new MarkdownRenderChild(el);
+            ctx.addChild(renderChild);
+
+            // 关键修复：生成所有单元格（即使未定义内容）
+            for (let row = 1; row <= rowCount; row++) {
+                for (let col = 1; col <= colCount; col++) {
+                    const key = `${row}-${col}`;
+                    const info = cellInfo[key];
+
+                    // 创建单元格
+                    const cell = document.createElement('div');
+                    cell.className = `grid-cell ${col === colCount ? 'last-col' : ''} ${row === rowCount ? 'last-row' : ''}`;
+                    cell.style.cssText = `
+                        left: ${info.x}px;
+                        top: ${info.y}px;
+                        width: ${info.w}px;
+                        height: ${info.h}px;
+                        border-right-width: ${config.border.w}px;
+                        border-bottom-width: ${config.border.w}px;
+                        border-color: ${config.border.color};
+                    `;
+                    el.appendChild(cell);
+
+                    // 填充内容
+                    const content = cells.get(key) || '';
+                    if (content) {
+                        // const offscreen = document.createElement('div');
+                        // // 关键：将容器放置在屏幕外，不影响视觉
+                        // offscreen.style.cssText = `
+                        //     position: absolute;
+                        //     top: -9999px;
+                        //     left: -9999px;
+                        //     visibility: hidden; /* 完全隐藏，不占用绘制资源 */
+                        //     width: auto;
+                        //     height: auto;
+                        //     box-sizing: border-box;
+                        //     padding: 4px; /* 与实际单元格内边距一致 */
+                        // `;
+                        // document.body.appendChild(offscreen);
+                        await MarkdownRenderer.render(this.app, content.content, cell, ctx.sourcePath, renderChild);
+                        let contentEl = cell.firstElementChild as HTMLElement;
+                        if (contentEl) {
+                            contentEl.style.margin = "0";
+                            contentEl.style.padding = "1";
+                            contentEl.style.boxSizing = 'border-box';
+                            contentEl.style.overflow = 'hidden';
+                            contentEl.style.display = 'inline-block'
+                            let { width: contentW, height: contentH } = contentEl.getBoundingClientRect();
+                            //document.body.removeChild(offscreen);
+                            //offscreen.removeChild(contentEl);
+
+                            requestAnimationFrame(() => {
+                                if (contentEl) {
+                                    //cell.appendChild(contentEl)
+                                    setContentStyle(
+                                        contentEl,
+                                        info.w,  // cellWidth
+                                        info.h,  // cellHeight
+                                        contentW,
+                                        contentH,
+                                        content.config    // 直接使用config，无需额外返回值
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        });
 
         this.registerMarkdownCodeBlockProcessor(
             'zyb-graph',
@@ -113,33 +619,50 @@ export default class MyPlugin extends Plugin {
             }
         );
 
-        // this.addRibbonIcon('whiteboard-icon', 'Open Whiteboard', async () => {
-        //     const electron = require('electron');
-        //     const win = new electron.remote.BrowserWindow({
-        //         maximize: true,
-        //         show: false,
-        //         frame: true,  // 移除默认边框和标题栏
-        //         autoHideMenuBar: true,
-        //         webPreferences: {
-        //             nodeIntegration: true,
-        //             contextIsolation: false
-        //         }
-        //     });
-        //     win.maximize();
-        //     win.setMenuBarVisibility(false);
-        //     win.loadURL(`http://localhost:9527/blackboard.html`);
-        //     win.show();
-        //     // const leaf = this.app.workspace.getLeaf(true); // false 表示主区域
-        //     // await leaf.open(new WhiteboardView(this, leaf));
-        //     // this.app.workspace.setActiveLeaf(leaf, { focus: true });
-        // });
-        // const jsBlob1 = new Blob([s1], { type: 'text/javascript' });
-        // const jsUrl1 = URL.createObjectURL(jsBlob1);
-        // const jsBlob2 = new Blob([s1], { type: 'text/javascript' });
-        // const jsUrl2 = URL.createObjectURL(jsBlob2);
-        // const jsBlob3 = new Blob([s1], { type: 'text/javascript' });
-        // const jsUrl3 = URL.createObjectURL(jsBlob3);
-        // viewHTML = viewHTML.replace("<!--SCRIPT_PLACEHOLDER-->", `<script src="${jsUrl1}"></script><script src="${jsUrl2}"></script><script src="${jsUrl3}"></script>`);
+    }
+
+    async switchToEnglish() {
+        if (await this.getCurrentIME() !== '英语模式') {
+            this.toggleIME();
+        }
+    }
+
+    // 切换到中文输入法（以搜狗拼音为例）
+    async switchToChinese() {
+        if (await this.getCurrentIME() !== '中文模式') {
+            this.toggleIME();
+        }
+    }
+
+    getCurrentIME() {
+        const vaultPath = (this.vault.adapter as any).getBasePath();
+        return new Promise((resolve, reject) => {
+            // 使用 execFile 执行 im-select.exe
+            execFile(path.join(vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id, 'im-select'), { encoding: 'buffer' }, (err: any, stdout: any) => {
+                //const imeId = stdout.trim();
+                const ime = stdout[0] === 211 ? '英语模式' : '中文模式'
+                resolve(ime);
+            });
+        });
+    }
+
+    /**
+     * 切换微软拼音的中英文输入模式
+     */
+    toggleIME() {
+        const vaultPath = (this.vault.adapter as any).getBasePath();
+        execFile('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-File', path.join(vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id, 'im-shift.ps1')]);
+    }
+
+    // 基础切换函数（复用）
+    switchInput(inputId: string) {
+        return new Promise<void>((resolve, reject) => {
+            const vaultPath = (this.vault.adapter as any).getBasePath();
+            execFile(path.join(vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id, 'im-select'), [inputId], (err: any) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
     }
 
     async htmlToPdfBuffer(html: string): Promise<Buffer> {
@@ -181,6 +704,65 @@ export default class MyPlugin extends Plugin {
             return; // Only handle the menu for the active Markdown view
         }
 
+        function convertToObsidianLinks(inputText: string) {
+            const lines = inputText.split('\n');
+            const blocks: any[] = [];
+            let currentBlock: any = null;
+
+            lines.forEach(line => {
+                // 匹配块的开始标记：m-n-[params]:
+                const startRegex = /^(\d+)-(\d+)(?:-([FRTBL]+))?:/;
+                const match = line.match(startRegex);
+
+                if (match) {
+                    // 如果存在前一个块，先保存它
+                    if (currentBlock) {
+                        currentBlock.content = currentBlock.content.trim()
+                        blocks.push(currentBlock);
+                    }
+
+                    // 创建新的块
+                    const m = parseInt(match[1], 10);
+                    const n = parseInt(match[2], 10);
+                    const params = match[3] ? match[3].trim() : null;
+                    const content = '';
+
+                    currentBlock = { m, n, params, content };
+                } else if (currentBlock) {
+                    // 如果在块内部，将当前行追加到内容中
+                    currentBlock.content += line.trim() + '\n';
+                }
+            });
+
+            // 处理最后一个块
+            if (currentBlock) {
+                blocks.push(currentBlock);
+            }
+
+            // 过滤掉内容为空的块
+            const filteredBlocks = blocks;
+
+            // 按行（m）和列（n）对块进行排序
+            filteredBlocks.sort((a, b) => {
+                if (a.m !== b.m) {
+                    return a.m - b.m;
+                }
+                return a.n - b.n;
+            });
+
+
+            // 生成新的文本格式
+            const result = filteredBlocks.map(item => {
+                const cleanedContent = item.content.trim();
+                if (item.params) {
+                    return `||${item.params}:${cleanedContent}`;
+                } else {
+                    return `||${cleanedContent}`;
+                }
+            }).join('\n');
+
+            return result + '\n||';
+        }
         // Add a custom menu item
         menu.addItem((item) => {
             item.setTitle('Insert Graph')
@@ -189,6 +771,116 @@ export default class MyPlugin extends Plugin {
                     this.initView();
                 });
         });
+
+        menu.addItem((item) => {
+            item.setTitle('Insert Grid')
+                .setIcon('graph-icon')
+                .onClick(() => {
+                    // const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
+
+                    // const selection = hostView.editor.getSelection();
+                    // if (!selection || selection.length === 0) {
+                    //     const docContent = hostView.editor.getValue();
+                    //     // 查找文本的起始索引
+                    //     const startIndex = docContent.indexOf('````grid', editor.posToOffset(hostView.editor.getCursor()));
+
+                    //     if (startIndex !== -1) {
+                    //         // 2. 如果找到了文本，计算其在编辑器中的行号和字符位置
+                    //         const from = editor.offsetToPos(startIndex);
+                    //         const to = editor.offsetToPos(startIndex + '````grid'.length);
+
+                    //         // 3. 将视图滚动到该位置
+                    //         // `scrollIntoView` 会确保这个位置在用户的视野范围内
+                    //         editor.scrollIntoView({ from, to }, true);
+
+                    //         // 4. (可选) 选中匹配的文本，使其高亮
+                    //         editor.setSelection(from, to);
+                    //     }
+                    // } else {
+                    //     editor.replaceSelection('####\n' + convertToObsidianLinks(selection) + '####')
+                    // }
+
+                    const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
+
+                    const cursor = hostView.editor.getCursor();
+                    hostView.editor.replaceRange(`\`\`\`\`grid
+# grid: 2 #000
+# rows: *
+# cols: *
+####
+||
+||
+####
+\`\`\`\``, cursor);
+                })
+        })
+
+        menu.addItem((item) => {
+            item.setTitle('Insert Options 1x4')
+                .setIcon('graph-icon')
+                .onClick(() => {
+                    const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
+
+                    const cursor = hostView.editor.getCursor();
+                    hostView.editor.replaceRange(`\`\`\`\`grid
+# height: 50
+# rows: *
+# cols: 50px * 50px * 50px * 50px *
+####
+||（A）||L:
+||（B）||L:
+||（C）||L:
+||（D）||L:
+||
+####
+\`\`\`\``, cursor);
+                })
+        })
+
+        menu.addItem((item) => {
+            item.setTitle('Insert Options 2x2')
+                .setIcon('graph-icon')
+                .onClick(() => {
+                    const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
+
+                    const cursor = hostView.editor.getCursor();
+                    hostView.editor.replaceRange(`\`\`\`\`grid
+# height: 100
+# rows: * *
+# cols: 50px * 50px *
+####
+||（A）||L:
+||（B）||L:
+||（C）||L:
+||（D）||L:
+||
+####
+\`\`\`\``, cursor);
+                })
+        })
+
+        menu.addItem((item) => {
+            item.setTitle('Insert Options 4x1')
+                .setIcon('graph-icon')
+                .onClick(() => {
+                    const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
+
+                    const cursor = hostView.editor.getCursor();
+                    hostView.editor.replaceRange(`\`\`\`\`grid
+# height: 200
+# rows: * * * *
+# cols: 50px *
+####
+||（A）||L:
+||（B）||L:
+||（C）||L:
+||（D）||L:
+||
+####
+\`\`\`\``, cursor);
+                })
+        })
+
 
         // if (hostView.previewMode?.containerEl) {
         //     menu.addItem((item) => {
@@ -200,13 +892,13 @@ export default class MyPlugin extends Plugin {
         //                 if (!file) return;
 
         //                 //const electron = require('electron');
-                        
+
 
         //             const pdfBuffer = await (window as any).electron.remote.getCurrentWebContents().printToPDF({
         //             pageSize: 'A4',
         //             printBackground: true
         //             });
-                            
+
         //                     const win = new (window as any).electron.remote.BrowserWindow({
         //                         maximize: true,
         //                         show: false,
@@ -261,81 +953,81 @@ export default class MyPlugin extends Plugin {
         await gv.onLoadFile(file);
     }
 
-    private attachMouseupListener() {
-        const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
-        const cm = (editor as any)?.cm;
-        if (cm?.contentDOM) {
-            const wrapper = cm.contentDOM as HTMLElement;
-            // Remove listener from previous wrapper if different
-            if (this.lastWrapper && this.lastWrapper !== wrapper) {
-                this.lastWrapper.removeEventListener('mouseup', this.onEditorMouseUp);
-            }
-            // Always remove before add to avoid stacking
-            wrapper.removeEventListener('mouseup', this.onEditorMouseUp);
-            wrapper.addEventListener('mouseup', this.onEditorMouseUp);
-            this.lastWrapper = wrapper;
-        }
-    }
+    // private attachMouseupListener() {
+    //     const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+    //     const cm = (editor as any)?.cm;
+    //     if (cm?.contentDOM) {
+    //         const wrapper = cm.contentDOM as HTMLElement;
+    //         // Remove listener from previous wrapper if different
+    //         if (this.lastWrapper && this.lastWrapper !== wrapper) {
+    //             this.lastWrapper.removeEventListener('mouseup', this.onEditorMouseUp);
+    //         }
+    //         // Always remove before add to avoid stacking
+    //         wrapper.removeEventListener('mouseup', this.onEditorMouseUp);
+    //         wrapper.addEventListener('mouseup', this.onEditorMouseUp);
+    //         this.lastWrapper = wrapper;
+    //     }
+    // }
 
-    private onEditorMouseUp = (event: MouseEvent) => {
-        if (this.formatting) {
-            this.applyFormat();
-        }
-    }
+    // private onEditorMouseUp = (event: MouseEvent) => {
+    //     if (this.formatting) {
+    //         this.applyFormat();
+    //     }
+    // }
 
-    private applyFormat() {
-        const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+    // private applyFormat() {
+    //     const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
 
-        if (!editor) return;
+    //     if (!editor) return;
 
-        // 这里可以添加您的格式处理逻辑
-        const selectedText = editor.getSelection();
-        // 示例: 只是简单地显示选中的内容
+    //     // 这里可以添加您的格式处理逻辑
+    //     const selectedText = editor.getSelection();
+    //     // 示例: 只是简单地显示选中的内容
 
-        if (!selectedText) return;
+    //     if (!selectedText) return;
 
-        const from = editor.getCursor("from");
-        const to = editor.getCursor("to");
+    //     const from = editor.getCursor("from");
+    //     const to = editor.getCursor("to");
 
-        // Get the full line text for both positions
-        const lineText = editor.getLine(from.line);
+    //     // Get the full line text for both positions
+    //     const lineText = editor.getLine(from.line);
 
-        // Get previous character (if exists)
-        let prevChar = '';
-        if (from.ch > 0) {
-            prevChar = lineText.charAt(from.ch - 1);
-        }
+    //     // Get previous character (if exists)
+    //     let prevChar = '';
+    //     if (from.ch > 0) {
+    //         prevChar = lineText.charAt(from.ch - 1);
+    //     }
 
-        // Get next character (if exists)
-        let nextChar = '';
-        if (to.ch < lineText.length) {
-            nextChar = lineText.charAt(to.ch);
-        }
+    //     // Get next character (if exists)
+    //     let nextChar = '';
+    //     if (to.ch < lineText.length) {
+    //         nextChar = lineText.charAt(to.ch);
+    //     }
 
-        if (prevChar === '$' && nextChar === '$') {
-            // If the selection is already formatted, do nothing
-            return;
-        }
+    //     if (prevChar === '$' && nextChar === '$') {
+    //         // If the selection is already formatted, do nothing
+    //         return;
+    //     }
 
-        let formatted = selectedText
-            .replace(/（/g, '(')
-            .replace(/）/g, ')')
-            .replace(/，/g, ',')
-            .replace(/；/g, ';')
+    //     let formatted = selectedText
+    //         .replace(/（/g, '(')
+    //         .replace(/）/g, ')')
+    //         .replace(/，/g, ',')
+    //         .replace(/；/g, ';')
 
-        formatted = '$' + formatted + '$';
+    //     formatted = '$' + formatted + '$';
 
-        // 这里添加您的格式处理逻辑
-        // 示例: 保持选中内容不变
-        editor.replaceSelection(formatted);
-    }
+    //     // 这里添加您的格式处理逻辑
+    //     // 示例: 保持选中内容不变
+    //     editor.replaceSelection(formatted);
+    // }
 
     onunload() {
         // Clean up event listener on unload
-        if (this.lastWrapper) {
-            this.lastWrapper.removeEventListener('mouseup', this.onEditorMouseUp);
-            this.lastWrapper = null;
-        }
+        // if (this.lastWrapper) {
+        //     this.lastWrapper.removeEventListener('mouseup', this.onEditorMouseUp);
+        //     this.lastWrapper = null;
+        // }
 
         if (this.server) {
             this.server.close();
@@ -372,6 +1064,155 @@ export default class MyPlugin extends Plugin {
         }
     }
 }
+
+function getDocumentContentWidth(): number {
+    const contentSelectors = [
+        // 编辑模式（CodeMirror）
+        '.cm-content > .cm-line',          // 标准编辑行
+        '.cm-line',                        // 备选编辑行
+        // 预览模式
+        '.markdown-preview-view p',        // 预览段落
+        '.markdown-preview-view h1, .markdown-preview-view h2', // 预览标题
+        '.markdown-preview-section > *',   // 预览区任意元素
+        // 通用文本内容
+        'p, h1, h2, h3, ul, ol'            // 最后尝试通用选择器
+    ];
+
+    // 2. 依次尝试选择器，直到找到有效元素
+    let contentElements: HTMLElement[] = [];
+    for (const selector of contentSelectors) {
+        contentElements = Array.from(document.querySelectorAll<HTMLElement>(selector));
+        if (contentElements.length > 0) break;
+    }
+
+    return contentElements[0].getBoundingClientRect().width;
+}
+
+// 解析行列定义
+function parseDimensions(def: string[], totalSize: number): number[] {
+    const dims: number[] = [];
+    let starTotal = 0;
+    let fixedTotal = 0;
+    const hasPercent = def.some(d => d.endsWith('%'));
+
+    def.forEach(d => {
+        const trim = d.trim();
+        if (trim.endsWith('*')) {
+            const weight = parseFloat(trim) || 1;
+            starTotal += weight;
+            dims.push(weight);
+        } else if (trim.endsWith('%')) {
+            const val = (totalSize * parseFloat(trim)) / 100;
+            fixedTotal += val;
+            dims.push(val);
+        } else if (trim.endsWith('px')) {
+            const val = parseFloat(trim) || 0;
+            fixedTotal += val;
+            dims.push(val);
+        } else {
+            starTotal += 1;
+            dims.push(1);
+        }
+    });
+
+    if (starTotal > 0) {
+        const available = hasPercent ? totalSize : Math.max(totalSize - fixedTotal, 0);
+        const starUnit = available / starTotal;
+        def.forEach((d, i) => {
+            if (d.trim().endsWith('*')) {
+                dims[i] *= starUnit;
+            }
+        });
+    }
+
+    return dims;
+}
+
+// 计算单元格（含边框位置修正）
+function calculateCells(
+    containerW: number,
+    containerH: number,
+    rowDef: string[],
+    colDef: string[],
+) {
+    const rowCount = rowDef.length;
+    const colCount = colDef.length;
+    const rowHeights = parseDimensions(rowDef, containerH);
+    const colWidths = parseDimensions(colDef, containerW);
+    const cells: { [key: string]: { x: number, y: number, w: number, h: number } } = {};
+    let y = 0;
+
+    rowHeights.forEach((rowH, rowIdx) => {
+        let x = 0;
+        colWidths.forEach((colW, colIdx) => {
+            let key = `${rowIdx + 1}-${colIdx + 1}`;
+            // 计算单元格尺寸（包含边框策略）
+            cells[key] = {
+                x: x,
+                y: y,
+                w: colW,
+                h: rowH
+            };
+            x += colW;
+        });
+        y += rowH;
+    });
+
+    return { cells, rowCount, colCount };
+}
+
+function setContentStyle(contentEl: HTMLElement, cellWidth: number, cellHeight: number, contentW: number, contentH: number, config: string) {
+    // 直接从config解析所有参数，无需中间变量
+    const alignLeft = config.includes('L');
+    const alignRight = config.includes('R');
+    const alignTop = config.includes('T');
+    const alignBottom = config.includes('B');
+    const needScale = config.includes('F'); // 直接用config判断，无需返回值
+
+    // 基础样式
+    contentEl.style.position = 'absolute';
+
+    let scale = 1;
+    if (needScale) {
+        // 基于原始内容尺寸计算缩放比例
+        scale = Math.min(
+            (cellWidth) / contentW,  // 减去内边距
+            (cellHeight) / contentH
+        );
+        // 先应用缩放（此时还未排版）
+        contentEl.style.transform = `scale(${scale})`;
+        // 缩放原点固定为内容自身左上角（确保缩放计算准确）
+        contentEl.style.transformOrigin = 'top left';
+    }
+
+    // 【第二步：计算缩放后的实际尺寸】
+    const scaledWidth = contentW * scale;
+    const scaledHeight = contentH * scale;
+
+    // 【第三步：基于缩放后的尺寸进行排版对齐】
+    // 水平排版
+    if (alignLeft) {
+        contentEl.style.left = '0';
+    } else if (alignRight) {
+        // 右对齐 = 单元格宽度 - 缩放后内容宽度
+        contentEl.style.left = `${cellWidth - scaledWidth}px`;  // 减去内边距
+    } else {
+        // 居中 = (单元格宽度 - 缩放后内容宽度) / 2
+        contentEl.style.left = `${(cellWidth - scaledWidth) / 2}px`;
+    }
+
+    // 垂直排版
+    if (alignTop) {
+        contentEl.style.top = '0';
+    } else if (alignBottom) {
+        // 底部对齐 = 单元格高度 - 缩放后内容高度
+        contentEl.style.top = `${cellHeight - scaledHeight}px`;  // 减去内边距
+    } else {
+        // 居中 = (单元格高度 - 缩放后内容高度) / 2
+        contentEl.style.top = `${(cellHeight - scaledHeight) / 2}px`;
+    }
+}
+
 
 function insertMetadata(svgString: string, metadataObj: any) {
     const parser = new DOMParser();

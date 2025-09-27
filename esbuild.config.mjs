@@ -33,11 +33,11 @@ const context = await esbuild.context({
 		"@lezer/lr",
 		...builtins],
 	format: "cjs",
-	target: "es2018",
+	target: "es2021",
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "E:\\Obsidian Vault\\.obsidian\\plugins\\zyb-plugin\\main.js",
+	outfile: "D:\\Obsidian Vault\\.obsidian\\plugins\\zyb-plugin\\main.js",
 	minify: prod,
 	platform: 'node'
 });
