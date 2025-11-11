@@ -83,9 +83,7 @@ export default class MyPlugin extends Plugin {
             this.app.workspace.on('editor-menu', this.handleEditorMenu, this)
         )
 
-        let dollarsChanged = false;
-        let lastCursor = -1;
-        let lastFormulaStart = -1;
+
         function findDollars(state: EditorState): DecorationSet {
             const builder = new RangeSetBuilder<Decoration>();
             const text = state.doc.toString();
@@ -98,15 +96,15 @@ export default class MyPlugin extends Plugin {
                 const from = match.index;
                 const to = match.index + match[0].length;
 
+                const block = match[0][1] === '$' && match[0].length > 2;
                 // 创建一个 Decoration 对象，它只包含样式信息，没有位置
-                const decoration = Decoration.mark({});
+                const decoration = Decoration.mark({ type: block ? 'block' : 'inline' });
 
                 // 使用 builder.add() 方法将 decoration 和其位置添加到 RangeSetBuilder 中
                 // builder.add() 接受 from, to, 和 decoration 三个参数
                 builder.add(from, to, decoration);
             }
 
-            dollarsChanged = true;
             // builder.finish() 方法返回一个正确的 DecorationSet
             return builder.finish();
         }
@@ -171,9 +169,9 @@ export default class MyPlugin extends Plugin {
             }
         });
 
-        let isEdtingGrid = false;
         let gridPreview: HTMLElement | null = null;
         let gridPreviewRender: any
+        let lastFormula: any;
         this.registerEditorExtension([
             dollarPositionsField,
             gridPositionsField,
@@ -181,44 +179,7 @@ export default class MyPlugin extends Plugin {
             EditorView.updateListener.of(async (update: ViewUpdate) => {
                 if (!this.formatting) return;
 
-                // 仅在 selection 发生变化时处理
-                // if (update.selectionSet) {
-                //     if (this.formatting) {
-
-                //         const editor = update.view;
-                //         const doc = editor.state.doc;
-                //         const selection = editor.state.selection.main;
-
-                //         // 空选择不处理
-                //         if (!selection.empty) {
-
-                //             const start = selection.from;
-                //             const end = selection.to;
-
-                //             // 获取选区前后一个字符
-                //             const charBefore = start > 0 ? doc.sliceString(start - 1, start) : null;
-                //             const charAfter = end < doc.length ? doc.sliceString(end, end + 1) : null;
-
-                //             // 判断是否前后都是 '$'
-                //             const isSurroundedByDollar = charBefore === "$" && charAfter === "$";
-
-                //             if (isSurroundedByDollar) {
-                //                 const selectedText = doc.sliceString(start, end);
-                //                 // 在这里执行你的逻辑：预览、转换、高亮等
-                //                 if (!selectedText.includes('\\')) {
-                //                     let tex = asciimathParser.parse(selectedText);
-                //                     this.app.workspace.activeEditor?.editor?.replaceSelection(tex);
-                //                 } else {
-                //                     let text = selectedText.trim();
-                //                     if (text.startsWith('\\displaystyle')) {
-                //                         this.app.workspace.activeEditor?.editor?.replaceSelection(text.replace('\\displaystyle', '').trim());
-                //                     }
-                //                 }
-                //             }
-                //         }
-                //     }
-                // }
-
+                /// grid 编辑处理
                 if (update.selectionSet) {
                     const cursorPos = update.view.state.selection.main.head;
                     const editor = this.app.workspace.activeEditor?.editor;
@@ -240,157 +201,149 @@ export default class MyPlugin extends Plugin {
                         if (gridStart !== -1 && gridEnd !== -1) {
                             const activeLeaf = this.app.workspace.activeLeaf;
                             if (!activeLeaf) return;
-                            isEdtingGrid = true;
 
                             if (gridPreviewRender) clearTimeout(gridPreviewRender);
                             gridPreviewRender = setTimeout(async () => {
-                            const container = document.createElement('div');
-                            container.style.position = 'fixed';
-                            container.style.zIndex = '9999';
-                            container.style.left = "-9999px";
-                            container.style.top = "0px";
-                            container.style.backgroundColor = "#fff"
-                            document.body.appendChild(container);
+                                const container = document.createElement('div');
+                                container.style.position = 'fixed';
+                                container.style.zIndex = '9999';
+                                container.style.left = "-9999px";
+                                container.style.top = "0px";
+                                container.style.backgroundColor = "#fff"
+                                document.body.appendChild(container);
                                 await MarkdownRenderer.render(this.app, editor.getRange(editor.offsetToPos(gridStart), editor.offsetToPos(gridEnd)), container, this.app.workspace.activeEditor!.file!.path, new MarkdownRenderChild(container));
                                 (container.firstChild as HTMLElement).style.left = "0px"
                                 if (gridPreview) {
                                     document.body.removeChild(gridPreview)
+                                    gridPreview = null;
                                 }
                                 container.style.left = "0px"
+                                container.style.transformOrigin = "0 0"
+                                container.style.transform = "scale(0.5,0.5)"
                                 gridPreview = container;
                             }, 1000);
                         } else {
                             if (gridPreviewRender) clearTimeout(gridPreviewRender);
-                            if (isEdtingGrid) {
-                                if (gridPreview) {
-                                    gridPreview.style.display = 'none'
-                                }
+                            if (gridPreview) {
+                                document.body.removeChild(gridPreview)
+                                gridPreview = null;
                             }
-                            isEdtingGrid = false;
                         }
                     }
                 }
 
+                /// math 编辑处理
                 if (update.selectionSet) {
                     const allDollarRanges = update.view.state.field(dollarPositionsField);
                     const cursorPos = update.view.state.selection.main.head;
 
-                    if (!dollarsChanged && lastCursor === cursorPos) {
-                        return;
-                    }
-                    lastCursor = cursorPos;
-                    dollarsChanged = false;
-
-                    let isInFormula = false;
-                    let formulaStart = -1;
+                    let currentFormula: any
                     allDollarRanges.between(cursorPos, cursorPos, (from, to, value) => {
                         if (cursorPos > from && cursorPos < to) {
-                            isInFormula = true;
-                            formulaStart = from;
+                            currentFormula = { from, to, decoration: value };
                             return false;
                         }
                     });
 
-                    if (lastFormulaStart !== -1) {
-                        if (lastFormulaStart !== formulaStart) {
-                            // 从一个代码块中跳出。执行转换。
-                            // 从start 计算 end也就是下一个$点, allDollarRanges或许还没更新
-                            let lastEnd = -1;
+                    if (lastFormula && lastFormula.decoration.spec.type === 'inline') {
+                        if (!currentFormula || currentFormula.from !== lastFormula.from) {
+                            ///需要重新计算lastFormula，to会发生变化
+                            let toFormat:any = undefined
                             allDollarRanges.between(cursorPos, cursorPos, (from, to, value) => {
-                                if (from === lastFormulaStart) {
-                                    lastEnd = to;
+                                if (from === lastFormula.from) {
+                                    toFormat = { from, to, decoration: value };
                                     return false;
                                 }
-                            })
-                            if (lastEnd !== -1) {
-                                const math = update.view.state.doc.sliceString(lastFormulaStart + 1, lastEnd - 1);
+                            });
+                            if (toFormat) {
+                                const math = update.view.state.doc.sliceString(toFormat.from + 1, toFormat.to - 1);
                                 if (!math.includes('\\')) {
-                                    this.app.workspace.activeEditor?.editor?.replaceRange('\\displaystyle ' + asciimathParser.parse(math).replaceAll('\\left', '').replaceAll('\\right', ''),
-                                        this.app.workspace.activeEditor?.editor?.offsetToPos(lastFormulaStart + 1),
-                                        this.app.workspace.activeEditor?.editor?.offsetToPos(lastEnd - 1));
+                                    this.app.workspace.activeEditor?.editor?.replaceRange('\\displaystyle ' + asciimathParser.parse(math).replaceAll('\\left', '').replaceAll('\\right', '').replaceAll('\\vec', '\\overrightarrow').replaceAll(' d h ', ' \\text{、} '),
+                                        this.app.workspace.activeEditor?.editor?.offsetToPos(toFormat.from + 1),
+                                        this.app.workspace.activeEditor?.editor?.offsetToPos(toFormat.to - 1));
                                 }
                             }
                         }
                     }
-                    lastFormulaStart = formulaStart
+                    lastFormula = currentFormula
 
                     if (this.formatting) {
-                        if (isInFormula) {
+                        if (currentFormula) {
                             this.switchToEnglish();
                         } else {
                             this.switchToChinese();
                         }
                     }
-                }
 
+                    // 新增：处理输入变化，检测连续的///
+                    if (update.transactions.some(tr => tr.isUserEvent('input'))) {
+                        const editor = update.view;
+                        const doc = editor.state.doc;
+                        const lastChange = update.transactions[0]; // 获取最近的输入事务
 
-                // 新增：处理输入变化，检测连续的///
-                if (update.transactions.some(tr => tr.isUserEvent('input'))) {
-                    const editor = update.view;
-                    const doc = editor.state.doc;
-                    const lastChange = update.transactions[0]; // 获取最近的输入事务
+                        // 从变更中获取输入位置和内容
+                        const changes = lastChange.changes;
+                        let inputText = '';
+                        let pos = -1;
 
-                    // 从变更中获取输入位置和内容
-                    const changes = lastChange.changes;
-                    let inputText = '';
-                    let pos = -1;
+                        // 提取输入的文本和位置
+                        changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+                            inputText = Array.from(inserted).join(''); // 输入的字符
+                            pos = fromA; // 输入位置
+                        });
 
-                    // 提取输入的文本和位置
-                    changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
-                        inputText = Array.from(inserted).join(''); // 输入的字符
-                        pos = fromA; // 输入位置
-                    });
+                        // 只处理单字符输入（连续输入时会逐字符触发）
+                        if (inputText.length !== 1) return;
 
-                    // 只处理单字符输入（连续输入时会逐字符触发）
-                    if (inputText.length !== 1) return;
+                        function tripleInput(char: string) {
+                            // 检查当前输入是否为'/'，并检测前两个字符是否也是'/'
+                            if (inputText === char) {
+                                // 确保有足够的前置字符可以检查
+                                if (pos >= 2) {
+                                    // 获取当前位置前两个字符
+                                    const prev1 = doc.sliceString(pos - 1, pos);
+                                    const prev2 = doc.sliceString(pos - 2, pos - 1);
 
-                    function tripleInput(char: string) {
-                        // 检查当前输入是否为'/'，并检测前两个字符是否也是'/'
-                        if (inputText === char) {
-                            // 确保有足够的前置字符可以检查
-                            if (pos >= 2) {
-                                // 获取当前位置前两个字符
-                                const prev1 = doc.sliceString(pos - 1, pos);
-                                const prev2 = doc.sliceString(pos - 2, pos - 1);
-
-                                // 检测是否形成了///
-                                if (prev1 === char && prev2 === char) {
-                                    // 找到连续的///，执行你的动作
-                                    return true;
+                                    // 检测是否形成了///
+                                    if (prev1 === char && prev2 === char) {
+                                        // 找到连续的///，执行你的动作
+                                        return true;
+                                    }
                                 }
                             }
+                            return false;
                         }
-                        return false;
-                    }
 
-                    if (tripleInput('/')) {
-                        // 计算///的起始和结束位置
-                        const startPos = pos - 2;
-                        const endPos = pos + 1; // 因为当前输入的/在inputPos位置
+                        if (tripleInput('/')) {
+                            // 计算///的起始和结束位置
+                            const startPos = pos - 2;
+                            const endPos = pos + 1; // 因为当前输入的/在inputPos位置
 
-                        const start = this.app.workspace.activeEditor?.editor?.offsetToPos(startPos)!;
-                        const end = this.app.workspace.activeEditor?.editor?.offsetToPos(endPos);
+                            const start = this.app.workspace.activeEditor?.editor?.offsetToPos(startPos)!;
+                            const end = this.app.workspace.activeEditor?.editor?.offsetToPos(endPos);
 
-                        // 2. 正确替换///为$$（使用EditorPosition参数）
-                        this.app.workspace.activeEditor?.editor?.replaceRange('$$', start, end);
+                            // 2. 正确替换///为$$（使用EditorPosition参数）
+                            this.app.workspace.activeEditor?.editor?.replaceRange('$$', start, end);
 
-                        // 3. 计算光标位置（$$中间）并转换为EditorPosition
-                        const cursorOffset = startPos + 1;
-                        const cursorPos = this.app.workspace.activeEditor?.editor?.offsetToPos(cursorOffset)!;
-                        this.app.workspace.activeEditor?.editor?.setCursor(cursorPos);
-                    } else if (tripleInput(',')) {
-                        // 后面是不是一个结束的'$'
-                        if (doc.sliceString(pos + 1, pos + 2) === '$') {
-                            // 移除,,,
-                            const a = this.app.workspace.activeEditor?.editor?.offsetToPos(pos - 2)!;
-                            const b = this.app.workspace.activeEditor?.editor?.offsetToPos(pos + 1)!;
-                            this.app.workspace.activeEditor?.editor?.replaceRange('', a, b);
-                            // pos -> pos - 3 -> pos - 2
-                            const cursorPos = this.app.workspace.activeEditor?.editor?.offsetToPos(pos - 1)!;
+                            // 3. 计算光标位置（$$中间）并转换为EditorPosition
+                            const cursorOffset = startPos + 1;
+                            const cursorPos = this.app.workspace.activeEditor?.editor?.offsetToPos(cursorOffset)!;
                             this.app.workspace.activeEditor?.editor?.setCursor(cursorPos);
+                        } else if (currentFormula && tripleInput(',')) {
+                            // 后面是不是一个结束的'$'
+                            if (doc.sliceString(pos + 1, pos + 2) === '$') {
+                                // 移除,,,
+                                const a = this.app.workspace.activeEditor?.editor?.offsetToPos(pos - 2)!;
+                                const b = this.app.workspace.activeEditor?.editor?.offsetToPos(pos + 1)!;
+                                this.app.workspace.activeEditor?.editor?.replaceRange('', a, b);
+                                // pos -> pos - 3 -> pos - 2
+                                const cursorPos = this.app.workspace.activeEditor?.editor?.offsetToPos(pos - 1)!;
+                                this.app.workspace.activeEditor?.editor?.setCursor(cursorPos);
+                            }
                         }
                     }
                 }
+
             })
         ]);
 
@@ -398,7 +351,7 @@ export default class MyPlugin extends Plugin {
         const style = document.createElement('style');
         style.textContent = `
             .grid-container {
-                position:relative;
+                position:absolute;
                 box-sizing: border-box;
                 margin: 0px;
                 padding: 0px;
@@ -434,7 +387,7 @@ export default class MyPlugin extends Plugin {
                 rows: ['*', '*'],
                 cols: ['*', '*'],
                 border: { w: 0, color: '#ccc' },
-                align: 'center',
+                align: 'left',
                 docWidth: 0,
                 padding: { h: 0, v: 0 },
             };
@@ -489,8 +442,7 @@ export default class MyPlugin extends Plugin {
             }
 
             // 容器尺寸
-            config.docWidth = getDocumentContentWidth()
-            const containerW = config.width !== '' ? parseInt(config.width) : config.docWidth;
+            const containerW = config.width !== '' ? parseInt(config.width) : 700;
             const containerH = parseInt(config.height);
 
             // 计算单元格
@@ -508,12 +460,31 @@ export default class MyPlugin extends Plugin {
             el.style.borderColor = config.border.color;
             el.style.borderWidth = `${config.border.w}px`;
             if (config.align === 'center') {
-                el.style.left = `${(config.docWidth - containerW) / 2}px`;
+                el.style.left = "0"
+                el.style.right = "0"
+                el.style.margin = "auto"
             } else if (config.align === 'left') {
-                el.style.left = `0px`;
+                el.style.left = "0"
+                el.style.right = "auto"
+                el.style.marginLeft = "0"
             } else if (config.align === 'right') {
-                el.style.left = `${(config.docWidth - containerW)}px`;
+                el.style.left = "auto"
+                el.style.right = "0"
+                el.style.marginRight = "0"
             }
+
+            const spacer = document.createElement('div');
+            spacer.className = 'grid-spacer';
+
+            // 3. 设置占位符的高度来撑开父容器
+            // spacer 元素必须在正常文档流中，所以它能撑开父容器
+            spacer.style.height = `${containerH}px`;
+            spacer.style.width = '100%'; // 确保占据父容器宽度
+            spacer.style.visibility = 'hidden'; // 让它不可见，只用于占位
+            spacer.style.pointerEvents = 'none'; // 避免干扰用户交互
+
+            // 4. 将占位符插入到 el 之后（或者之前）
+            el.parentElement!.insertBefore(spacer, el.nextSibling);
 
             const renderChild = new MarkdownRenderChild(el);
             ctx.addChild(renderChild);
@@ -776,30 +747,6 @@ export default class MyPlugin extends Plugin {
             item.setTitle('Insert Grid')
                 .setIcon('graph-icon')
                 .onClick(() => {
-                    // const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
-
-                    // const selection = hostView.editor.getSelection();
-                    // if (!selection || selection.length === 0) {
-                    //     const docContent = hostView.editor.getValue();
-                    //     // 查找文本的起始索引
-                    //     const startIndex = docContent.indexOf('````grid', editor.posToOffset(hostView.editor.getCursor()));
-
-                    //     if (startIndex !== -1) {
-                    //         // 2. 如果找到了文本，计算其在编辑器中的行号和字符位置
-                    //         const from = editor.offsetToPos(startIndex);
-                    //         const to = editor.offsetToPos(startIndex + '````grid'.length);
-
-                    //         // 3. 将视图滚动到该位置
-                    //         // `scrollIntoView` 会确保这个位置在用户的视野范围内
-                    //         editor.scrollIntoView({ from, to }, true);
-
-                    //         // 4. (可选) 选中匹配的文本，使其高亮
-                    //         editor.setSelection(from, to);
-                    //     }
-                    // } else {
-                    //     editor.replaceSelection('####\n' + convertToObsidianLinks(selection) + '####')
-                    // }
-
                     const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
 
                     const cursor = hostView.editor.getCursor();
@@ -881,45 +828,28 @@ export default class MyPlugin extends Plugin {
                 })
         })
 
+            menu.addItem((item) => {
+            item.setTitle('Insert Figure')
+                .setIcon('graph-icon')
+                .onClick(() => {
+                    const hostView = this.workspace.getActiveViewOfType(MarkdownView)!;
 
-        // if (hostView.previewMode?.containerEl) {
-        //     menu.addItem((item) => {
-        //         item.setTitle('Open In Whiteboard')
-        //             .setIcon('document')
-        //             .onClick(async () => {
-        //                 // 1. 获取当前文档内容
-        //                 const file = hostView.file;
-        //                 if (!file) return;
+                    const cursor = hostView.editor.getCursor();
+                    hostView.editor.replaceRange(`\`\`\`\`grid
+# height: 200
+# width: 200
+# align: right
+# rows: *
+# cols: *
+####
+||F:
+||
+####
+\`\`\`\``, cursor);
+                })
+        })
 
-        //                 //const electron = require('electron');
 
-
-        //             const pdfBuffer = await (window as any).electron.remote.getCurrentWebContents().printToPDF({
-        //             pageSize: 'A4',
-        //             printBackground: true
-        //             });
-
-        //                     const win = new (window as any).electron.remote.BrowserWindow({
-        //                         maximize: true,
-        //                         show: false,
-        //                         frame: true,  // 移除默认边框和标题栏
-        //                         autoHideMenuBar: true,
-        //                         webPreferences: {
-        //                             nodeIntegration: true,
-        //                             contextIsolation: false
-        //                         }
-        //                     });
-        //                     win.maximize();
-        //                     win.setMenuBarVisibility(false);
-        //                     win.loadURL(`http://localhost:9527/blackboard.html`);
-        //                     win.show();
-
-        //                     win.webContents.on('did-finish-load', () => {
-        //                         win.webContents.send('open-pdf', pdfBuffer);
-        //                     });
-        //             });
-        //     });
-        // }
     }
 
     async ensureFolderExists(folderPath: string) {
